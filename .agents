@@ -1,0 +1,135 @@
+# Tastytrade IVR Scanner - Agent Automation Configuration
+
+## Project Agents
+
+### tastytrade-developer
+**Purpose**: Specialized agent for tastytrade SDK development tasks
+**Tools**: Read, Write, Edit, Bash, Grep, Glob
+**Responsibilities**:
+- Implement tastytrade SDK integration
+- Handle authentication and session management
+- Develop market data retrieval functions
+- Debug API-related issues
+- Optimize API usage and rate limiting
+
+**Usage**: Use this agent for any tastytrade-specific development tasks
+
+### python-architect
+**Purpose**: Python project structure and best practices
+**Tools**: Read, Write, Edit, Glob, Grep
+**Responsibilities**:
+- Design project architecture
+- Implement configuration management
+- Create proper error handling patterns
+- Ensure code quality and testing
+- Manage dependencies and virtual environments
+
+**Usage**: Use for overall Python project structure and architecture decisions
+
+### data-processor
+**Purpose**: Financial data processing and calculations
+**Tools**: Read, Write, Edit, Bash
+**Responsibilities**:
+- Implement IVR calculation algorithms
+- Process market data efficiently
+- Handle data validation and cleaning
+- Optimize data processing performance
+- Manage data caching strategies
+
+**Usage**: Use for any data processing, calculations, or financial computations
+
+### testing-specialist
+**Purpose**: Testing and quality assurance
+**Tools**: Read, Write, Edit, Bash
+**Responsibilities**:
+- Create unit tests for all modules
+- Implement integration tests with tastytrade API
+- Set up continuous testing workflows
+- Performance testing and benchmarking
+- Error scenario testing
+
+**Usage**: Use for all testing-related tasks and quality assurance
+
+## Agent Usage Guidelines
+
+### When to Use Agents
+1. **Complex Multi-step Tasks**: Use agents for tasks requiring 3+ steps
+2. **Specialized Knowledge**: Use domain-specific agents for their expertise
+3. **Parallel Work**: Launch multiple agents for independent tasks
+4. **Research Tasks**: Use agents to investigate and implement solutions
+
+### Agent Selection Criteria
+- **tastytrade-developer**: For SDK integration, API calls, authentication
+- **python-architect**: For project structure, configuration, best practices
+- **data-processor**: For calculations, data manipulation, financial logic
+- **testing-specialist**: For testing, validation, quality assurance
+
+### Parallel Agent Usage
+```bash
+# Example: Run multiple agents in parallel for different phases
+/task "Implement authentication module" tastytrade-developer
+/task "Set up project structure" python-architect
+/task "Design IVR calculation logic" data-processor
+```
+
+## Project-Specific Commands
+
+### Development Workflow
+```bash
+# Start development environment
+python -m venv venv
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+pip install -r requirements.txt
+
+# Run tests
+python -m pytest tests/
+
+# Run the scanner
+python main.py --watchlist "My Watchlist" --threshold 25
+
+# Development mode with verbose logging
+python main.py --debug --watchlist "Test Watchlist"
+```
+
+### Common Agent Tasks
+1. **Phase 1 Setup**: `tastytrade-developer` + `python-architect`
+2. **Phase 2 Watchlists**: `tastytrade-developer`
+3. **Phase 3 IVR Calculation**: `data-processor` + `tastytrade-developer`
+4. **Phase 4 Integration**: `python-architect` + `testing-specialist`
+5. **Phase 5 Enhancement**: All agents as needed
+
+## Agent Communication Protocol
+
+### Task Handoffs
+- Each agent should document their work for the next agent
+- Use clear commit messages and code comments
+- Update PROJECT_PLAN.md progress as tasks complete
+- Create detailed error logs for debugging
+
+### Collaboration Guidelines
+- Agents should not override each other's work without discussion
+- Use git branches for experimental features
+- Document API changes that affect other modules
+- Maintain consistent coding standards across all agents
+
+## Quality Standards
+
+### Code Requirements
+- All functions must have docstrings
+- Error handling for all API calls
+- Type hints for all function parameters
+- Unit tests for all public functions
+- Configuration validation
+
+### Documentation Standards
+- Update README.md for user-facing changes
+- Document all configuration options
+- Provide example usage for all features
+- Maintain API documentation for custom functions
+
+### Security Standards
+- Never commit credentials or API keys
+- Use environment variables for all sensitive data
+- Implement secure session handling
+- Validate all user inputs
+- Log security events appropriately
