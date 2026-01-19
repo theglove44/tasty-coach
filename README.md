@@ -111,7 +111,7 @@ TASTY_ACCOUNT_NUMBER=5WW46136
 
 ## Project Status
 
-This project is currently in **Phase 2** development:
+This project is currently in **Phase 5** development:
 
 - ✅ **Phase 1**: Setup and Authentication (Complete)
   - Project structure created
@@ -128,16 +128,16 @@ This project is currently in **Phase 2** development:
   - Multiple watchlist support
   - Watchlist information and validation
 
-- ⏳ **Phase 3**: Market Data & IVR Calculation (Next)
+- ✅ **Phase 3**: Market Data & IVR Calculation (Complete)
   - Fetch market data and option chains
   - Implement IVR calculation algorithm
   - Apply threshold filtering
 
-- 📋 **Phase 4**: Scanning Logic & Output (Planned)
+- ✅ **Phase 4**: Scanning Logic & Output (Complete)
   - Complete end-to-end workflow
   - Formatted output and reporting
 
-- 📋 **Phase 5**: Enhancement & Optimization (Future)
+- ⏳ **Phase 5**: Enhancement & Optimization (Next)
   - Additional features and optimizations
 
 ## Development
