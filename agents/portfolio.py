@@ -165,39 +165,116 @@ class PortfolioAgent:
 
     def print_positions_report(self):
         """Prints a CLI-friendly report of account balances and open positions."""
+        from tastytrade.market_data import get_market_data_by_type
+
         # 1. Account Summary
         status = self.get_account_status()
         if not status:
             print("❌ Could not fetch account status.")
             return
 
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 90)
         print(f"💰 ACCOUNT SUMMARY ({self.account_number})")
-        print("=" * 60)
+        print("=" * 90)
         print(f"Net Liq:       ${status.get('net_liquidating_value', 0):,.2f}")
         print(f"Equity BP:     ${status.get('equity_buying_power', 0):,.2f}")
         print(f"Cash Balance:  ${status.get('cash_balance', 0):,.2f}")
         
         # 2. Positions Table
         positions = self.get_positions()
-        print("\n" + "=" * 100)
-        print(f"📊 OPEN POSITIONS ({len(positions)} legs)")
-        print("=" * 100)
         
         if not positions:
-            print("No open positions found.")
+            print("\nNo open positions found.")
             return
 
+        # Fetch market data for all positions for accurate P/L
+        symbols = [p.symbol for p in positions]
+        quotes_map = {}
+        try:
+            quotes = get_market_data_by_type(self.session, symbols)
+            quotes_map = {q.symbol: q for q in quotes}
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch market data: {e}. P/L may be inaccurate.")
+
+        print("\n" + "=" * 130)
+        print(f"📊 OPEN POSITIONS ({len(positions)} legs)")
+        print("=" * 130)
+        
         grouped_data = self._group_positions(positions)
         
         # Header
-        print(f"{'Qty':>5} | {'Symbol/Strike':<25} | {'Exp':<10} | {'Avg Price':>10} | {'Mark':>10} | {'Value':>10}")
-        print("-" * 100)
+        # Qty | Symbol/Strike | Exp | DTE | Trade Prc | Mark | Value | P/L Open | P/L %
+        header = f"{'Qty':>5} | {'Symbol/Strike':<22} | {'Exp':<8} | {'DTE':>4} | {'Trd Prc':>9} | {'Mark':>9} | {'Value':>10} | {'P/L Opn':>10} | {'P/L %':>7}"
+        print(header)
+        print("-" * 130)
 
         for underlying, strategies in grouped_data.items():
             print(f" ► {underlying}")
             for strat in strategies:
-                print(f"    └── {strat['name']}")
+                # Pre-calculate Strategy Totals
+                strat_pl_open = 0.0
+                strat_entry_cost = 0.0
+                
+                for pos in strat['legs']:
+                    qty = int(getattr(pos, 'quantity', 0))
+                    # Handle Short qty
+                    if getattr(pos, 'quantity_direction', 'Long') == 'Short':
+                        qty = -abs(qty)
+                    
+                    multiplier = int(getattr(pos, 'multiplier', 100) or 100)
+                    avg_open_price = float(getattr(pos, 'average_open_price', 0) or 0)
+                    
+                    # Mark
+                    mark = 0.0
+                    if pos.symbol in quotes_map:
+                        mark = float(quotes_map[pos.symbol].mark)
+                    else:
+                         mv = float(getattr(pos, 'market_value', 0))
+                         if qty != 0:
+                             mark = abs(mv / (qty * multiplier))
+                    
+                    # Entry Cost (Net)
+                    # For Long: positive cost. For Short: negative cost (credit).
+                    strat_entry_cost += (qty * avg_open_price * multiplier)
+                    
+                    # P/L
+                    strat_pl_open += (mark - avg_open_price) * qty * multiplier
+
+                # Strategy P/L %
+                # If cost is 0 (unlikely), avoid div 0
+                strat_pl_pct = 0.0
+                if abs(strat_entry_cost) > 0.01:
+                    # For Credit trades (negative cost), P/L is positive when Mark < Open. 
+                    # We want % of max profit (credit)? Or % of captured value?
+                    # Standard ROI: P/L / Capital.
+                    # But for short premium, 'Capital' is margin, which we don't have easily here.
+                    # Usually traders want "% of Max Profit" for credit spreads.
+                    # Max Profit = Credit. 
+                    # return P/L / Abs(Credit).
+                    strat_pl_pct = strat_pl_open / abs(strat_entry_cost)
+
+                # Print Strategy Header with Totals
+                # Align P/L to the columns: P/L Opn is ~ column 100-110, P/L % ~ 120
+                # Header: ... | Value      | P/L Opn    | P/L %
+                # We can construct a string that pads spaces until those columns.
+                # Strategy Name len varies.
+                # Use fixed spacing logic or simplified 
+                
+                # Let's align P/L Opn to be roughly under the "P/L Opn" header
+                # The header layout is:
+                # Qty (5) | Sym (22) | Exp (8) | DTE (4) | Trd Prc (9) | Mark (9) | Value (10) | P/L Opn (10) | P/L % (7)
+                # Separators: " | " (3 chars)
+                # Lengths: 5+3+22+3+8+3+4+3+9+3+9+3+10+3 = 88 chars to start of P/L Opn
+                
+                prefix = f"    └── {strat['name']}"
+                padding = " " * (88 - len(prefix))
+                
+                # If prefix is too long, just space it out a bit
+                if len(prefix) > 85:
+                    padding = "   "
+                
+                print(f"{prefix}{padding}{strat_pl_open:>10.2f} | {strat_pl_pct:>6.1%}")
+
                 for pos in strat['legs']:
                     qty = int(getattr(pos, 'quantity', 0))
                     # Handle Short qty
@@ -205,18 +282,49 @@ class PortfolioAgent:
                         qty = -abs(qty)
                     
                     details = getattr(pos, '_parsed_details', None)
+                    multiplier = int(getattr(pos, 'multiplier', 100) or 100)
                     
+                    dte_str = "-"
+                    exp_str = "-"
+                    display_name = getattr(pos, 'symbol', 'Unknown')
+
+                    passed_expiration = False
                     if details:
                         # Option
                         display_name = f"{details['strike']:.1f} {details['type'][0]}"
                         exp_str = details['expiration'].strftime('%y-%m-%d')
+                        days = (details['expiration'] - date.today()).days
+                        dte_str = str(days)
+                        if days < 0: passed_expiration = True
                     else:
-                        # Stock
-                        display_name = getattr(pos, 'symbol', 'Unknown')
-                        exp_str = "-"
+                        # Stock or other
+                        if hasattr(pos, 'expires_at') and pos.expires_at: # Future / Future Option
+                            exp_date = pos.expires_at.date()
+                            exp_str = exp_date.strftime('%y-%m-%d')
+                            dte_str = str((exp_date - date.today()).days)
 
-                    avg_price = float(getattr(pos, 'average_open_price', 0) or 0)
-                    market_value = float(getattr(pos, 'market_value', 0) or 0)
+                    avg_open_price = float(getattr(pos, 'average_open_price', 0) or 0)
                     
-                    print(f"{qty:>5} |   {display_name:<23} | {exp_str:<10} | ${avg_price:>9.2f} | {'-':>10} | ${market_value:>9.2f}")
-            print("-" * 100)
+                    # Determine Mark
+                    mark = 0.0
+                    if pos.symbol in quotes_map:
+                        mark = float(quotes_map[pos.symbol].mark)
+                    else:
+                         mv = float(getattr(pos, 'market_value', 0))
+                         if qty != 0:
+                             mark = abs(mv / (qty * multiplier))
+
+                    market_value = mark * qty * multiplier
+                    
+                    pl_open = (mark - avg_open_price) * qty * multiplier
+                    
+                    # P/L %
+                    pl_pct = 0.0
+                    if avg_open_price != 0:
+                        if qty > 0:
+                            pl_pct = (mark - avg_open_price) / avg_open_price
+                        else: # Short
+                            pl_pct = (avg_open_price - mark) / avg_open_price
+
+                    print(f"{qty:>5} |   {display_name:<20} | {exp_str:<8} | {dte_str:>4} | ${avg_open_price:>8.2f} | ${mark:>8.2f} | ${market_value:>9.2f} | ${pl_open:>9.2f} | {pl_pct:>6.1%}")
+            print("-" * 130)
