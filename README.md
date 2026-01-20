@@ -109,7 +109,7 @@ TASTY_ACCOUNT_NUMBER=5WW46136
 ./venv/bin/python main.py --report
 ```
 
-![Account Report Example](docs/postion_report.png)
+![Account Report Example](docs/position_report.png)
 
 ### Debug Mode
 ```bash
