@@ -104,6 +104,11 @@ TASTY_ACCOUNT_NUMBER=5WW46136
 ./venv/bin/python main.py --watchlist "High IV Plays" --threshold 30
 ```
 
+### View Account Report
+```bash
+./venv/bin/python main.py --report
+```
+
 ### Debug Mode
 ```bash
 ./venv/bin/python main.py --debug --watchlist "Test List"

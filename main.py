@@ -22,6 +22,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-connection", "-c", action="store_true", help="Test connection")
     parser.add_argument("--list-watchlists", "-l", action="store_true", help="List available watchlists")
     parser.add_argument("--market", "-m", action="store_true", help="Check Market Status")
+    parser.add_argument("--report", "-r", action="store_true", help="Generate Account & Positions Report")
     parser.add_argument(
         "--account",
         type=str,
@@ -105,6 +106,11 @@ def main() -> int:
 
         if args.market:
             market_schedule.print_status()
+            return 0
+
+        if args.report:
+            print("\nGenerating Account Report...")
+            portfolio.print_positions_report()
             return 0
 
         if args.list_watchlists:
