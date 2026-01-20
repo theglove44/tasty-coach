@@ -109,6 +109,8 @@ TASTY_ACCOUNT_NUMBER=5WW46136
 ./venv/bin/python main.py --report
 ```
 
+![Account Report Example](docs/image_postion_report.png)
+
 ### Debug Mode
 ```bash
 ./venv/bin/python main.py --debug --watchlist "Test List"
