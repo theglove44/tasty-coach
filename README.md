@@ -111,6 +111,19 @@ TASTY_ACCOUNT_NUMBER=5WW46136
 
 ![Account Report Example](docs/position_report.png)
 
+### Market Snapshot
+Get a quick price snapshot for a specific list of symbols (e.g. overnight market check).
+
+1. Create a watchlist named **"Snapshot"** in your tastytrade platform.
+2. Add your desired symbols (e.g. `/ES`, `/NQ`, `VIX`).
+   - The tool automatically resolves root symbols (like `/ES`) to the current active contract (e.g., `/ESH6`).
+3. Run the command:
+```bash
+./venv/bin/python main.py --snapshot
+```
+
+![Snapshot Example](docs/snapshot_example.png)
+
 ### Debug Mode
 ```bash
 ./venv/bin/python main.py --debug --watchlist "Test List"

@@ -13,6 +13,8 @@ from tastytrade.metrics import get_market_metrics, MarketMetricInfo
 from tastytrade.market_data import get_market_data_by_type
 from tastytrade.watchlists import PrivateWatchlist, PublicWatchlist
 from tastytrade.order import InstrumentType
+from tastytrade.instruments import get_option_chain, get_future_option_chain
+
 
 @dataclass
 class IVRData:
@@ -28,6 +30,16 @@ class IVRData:
     volume: Optional[Decimal] = None
     has_options: bool = False
     error_message: Optional[str] = None
+
+@dataclass
+class SnapshotData:
+    """Data class for Market Snapshot."""
+    symbol: str
+    last: float = 0.0
+    net_change: float = 0.0
+    percent_change: float = 0.0
+    description: str = ""
+
 
 class ScannerAgent:
     """Watchlist & IVR Filtering Agent."""
@@ -62,6 +74,97 @@ class ScannerAgent:
             symbols.append(symbol)
             
         return symbols
+
+    def get_market_snapshot(self, symbols: List[str]) -> List[SnapshotData]:
+        """Fetch market snapshot (price, change) for symbols."""
+        futures = [s for s in symbols if s.startswith('/')]
+        # Treat everything else as equity/index for now
+        equities = [s for s in symbols if not s.startswith('/')]
+        
+        snapshot_data = []
+
+        try:
+            # Fetch Futures
+            if futures:
+                # Resolve root symbols (e.g. /ES) to active contracts (e.g. /ESH6)
+                resolved_futures = []
+                for f in futures:
+                    # Try to resolve via Future Option Chain active underlying
+                    # Input could be '/ES' or 'ES' or '/ESH6'
+                    # We try to treat it as a product code first (strip /)
+                    product_code = f.lstrip('/')
+                    
+                    found = False
+                    try:
+                        # Try future option chain first (most reliable for roots)
+                        chain = get_future_option_chain(self.session, product_code)
+                        if chain:
+                            # Use first exp, first strike to find underlying
+                            first_exp = list(chain.keys())[0]
+                            strike = chain[first_exp][0]
+                            if hasattr(strike, 'underlying_symbol'):
+                                resolved_futures.append(strike.underlying_symbol)
+                                found = True
+                    except Exception:
+                        pass
+                    
+                    if not found:
+                        # If failed, it might be already a valid symbol or equity option chain?
+                        # Or maybe get_option_chain works (like for /ES sometimes?)
+                        try:
+                            chain = get_option_chain(self.session, f)
+                            if chain:
+                                first_exp = list(chain.keys())[0]
+                                strike = chain[first_exp][0]
+                                if hasattr(strike, 'underlying_symbol'):
+                                    resolved_futures.append(strike.underlying_symbol)
+                                    found = True
+                        except Exception:
+                            pass
+                            
+                    if not found:
+                         # Fallback to original
+                         resolved_futures.append(f)
+
+                data = get_market_data_by_type(self.session, futures=resolved_futures)
+                
+                for d in data:
+                    last = float(d.last) if d.last else 0.0
+                    prev = float(d.prev_close) if d.prev_close else 0.0
+                    change = last - prev
+                    pct = (change / prev) * 100 if prev != 0 else 0.0
+                    
+                    snapshot_data.append(SnapshotData(
+                        symbol=d.symbol,
+                        last=last,
+                        net_change=change,
+                        percent_change=pct,
+                        description=getattr(d, 'description', "")
+                    ))
+
+            
+            # Fetch Equities/Indices
+            if equities:
+                data = get_market_data_by_type(self.session, equities=equities)
+                for d in data:
+                    last = float(d.last) if d.last else 0.0
+                    prev = float(d.prev_close) if d.prev_close else 0.0
+                    change = last - prev
+                    pct = (change / prev) * 100 if prev != 0 else 0.0
+                    
+                    snapshot_data.append(SnapshotData(
+                        symbol=d.symbol,
+                        last=last,
+                        net_change=change,
+                        percent_change=pct,
+                        description=getattr(d, 'description', "")
+                    ))
+
+        except Exception as e:
+            self.logger.error(f"Error fetching snapshot: {e}")
+
+        return snapshot_data
+
 
     def scan_ivr(self, symbols: List[str]) -> Dict[str, IVRData]:
         """Fetch IVR data for symbols in batches."""
@@ -133,4 +236,40 @@ class ScannerAgent:
             report.append(f"{t.symbol:<8} | {ivr:>5} | {ivp:>5} | {iv:>5} | {price:>9} | {stars:<5} | {earns:<5}")
             
         report.append("-" * 70)
+        report.append("-" * 70)
         return "\n".join(report)
+
+    def print_snapshot(self, data: List[SnapshotData]) -> None:
+        """Print a market snapshot table."""
+        if not data:
+            print("No snapshot data available.")
+            return
+
+        # Sort by Change % (Descending)
+        data.sort(key=lambda x: x.percent_change, reverse=True)
+
+        print("")
+        print(f"{'Symbol':<10} {'Last':>10} {'Chg':>10} {'Chg%':>10}")
+        print("-" * 44)
+
+        for item in data:
+            # Color coding (ANSI escape codes)
+            # Red: \033[91m, Green: \033[92m, Reset: \033[0m
+            color = "\033[92m" if item.net_change >= 0 else "\033[91m"
+            reset = "\033[0m"
+            
+            # Format numbers
+            last_str = f"{item.last:,.2f}"
+            chg_str = f"{item.net_change:+.2f}"
+            pct_str = f"{item.percent_change:+.2f}%"
+
+            # Apply color to the whole line or just values? 
+            # User image shows values colored.
+            # Symbol white/bold, values colored.
+            
+            symbol_fmt = f"\033[1m{item.symbol:<10}\033[0m" # Bold symbol
+            
+            # For coloring, we apply to each value col
+            print(f"{symbol_fmt} {color}{last_str:>10} {chg_str:>10} {pct_str:>10}{reset}")
+        print("")
+

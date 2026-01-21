@@ -22,6 +22,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-connection", "-c", action="store_true", help="Test connection")
     parser.add_argument("--list-watchlists", "-l", action="store_true", help="List available watchlists")
     parser.add_argument("--market", "-m", action="store_true", help="Check Market Status")
+    parser.add_argument("--snapshot", "-s", action="store_true", help="Market Snapshot")
     parser.add_argument("--report", "-r", action="store_true", help="Generate Account & Positions Report")
     parser.add_argument(
         "--account",
@@ -106,6 +107,25 @@ def main() -> int:
 
         if args.market:
             market_schedule.print_status()
+            return 0
+
+        if args.snapshot:
+            print("\n📸 Fetching Market Snapshot...")
+            # Try to get symbols from "Snapshot" watchlist
+            # We must set equity_only=False to include futures/indices
+            symbols = scanner.get_symbols_from_watchlist("Snapshot", equity_only=False)
+            
+            if not symbols:
+                print("❌ Watchlist 'Snapshot' not found or empty.")
+                print("   Please create a watchlist named 'Snapshot' with your desired symbols (e.g. /ESH6, /NQH6, VIX)")
+                # Optional: Fallback to defaults? 
+                # User specifically asked for 'Snapshot' watchlist so let's stick to that.
+                # However, for testing, if I don't have it, I can temporarily use hardcoded list if debug?
+                # For now, stick to user requirements.
+                return 1
+            
+            snapshot_data = scanner.get_market_snapshot(symbols)
+            scanner.print_snapshot(snapshot_data)
             return 0
 
         if args.report:
