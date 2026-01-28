@@ -240,7 +240,7 @@ class ScannerAgent:
         return "\n".join(report)
 
     def print_snapshot(self, data: List[SnapshotData]) -> None:
-        """Print a market snapshot table."""
+        """Print a market snapshot table - Discord friendly format."""
         if not data:
             print("No snapshot data available.")
             return
@@ -248,28 +248,28 @@ class ScannerAgent:
         # Sort by Change % (Descending)
         data.sort(key=lambda x: x.percent_change, reverse=True)
 
-        print("")
-        print(f"{'Symbol':<10} {'Last':>10} {'Chg':>10} {'Chg%':>10}")
-        print("-" * 44)
+        # Calculate column widths for perfect alignment
+        symbol_width = max(len("Symbol"), max(len(item.symbol) for item in data)) + 2
+        last_width = max(len("Last"), max(len(f"{item.last:,.2f}") for item in data))
+        chg_width = max(len("Chg"), max(len(f"{item.net_change:+.2f}") for item in data))
+        chg_pct_width = max(len("Chg%"), max(len(f"{item.percent_change:+.2f}%") for item in data))
+
+        # Header in code block for clean Discord display
+        print("```")
+        print(f"{'Symbol':<{symbol_width}} {'Last':>{last_width}} {'Chg':>{chg_width}} {'Chg%':>{chg_pct_width}}")
+        print("-" * (symbol_width + last_width + chg_width + chg_pct_width + 6))
 
         for item in data:
-            # Color coding (ANSI escape codes)
-            # Red: \033[91m, Green: \033[92m, Reset: \033[0m
-            color = "\033[92m" if item.net_change >= 0 else "\033[91m"
-            reset = "\033[0m"
+            # Direction indicator
+            direction = "🟢" if item.net_change >= 0 else "🔴"
             
             # Format numbers
             last_str = f"{item.last:,.2f}"
             chg_str = f"{item.net_change:+.2f}"
             pct_str = f"{item.percent_change:+.2f}%"
 
-            # Apply color to the whole line or just values? 
-            # User image shows values colored.
-            # Symbol white/bold, values colored.
-            
-            symbol_fmt = f"\033[1m{item.symbol:<10}\033[0m" # Bold symbol
-            
-            # For coloring, we apply to each value col
-            print(f"{symbol_fmt} {color}{last_str:>10} {chg_str:>10} {pct_str:>10}{reset}")
-        print("")
+            # Clean inline format
+            print(f"{item.symbol:<{symbol_width}} {last_str:>{last_width}} {chg_str:>{chg_width}} {pct_str:>{chg_pct_width}} {direction}")
+        
+        print("```")
 

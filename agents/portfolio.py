@@ -163,7 +163,7 @@ class PortfolioAgent:
             
         return results
 
-    def print_positions_report(self):
+    def print_positions_report(self, discord: bool = False):
         """Prints a CLI-friendly report of account balances and open positions."""
         from tastytrade.market_data import get_market_data_by_type
 
@@ -173,18 +173,19 @@ class PortfolioAgent:
             print("❌ Could not fetch account status.")
             return
 
-        print("\n" + "=" * 90)
-        print(f"💰 ACCOUNT SUMMARY ({self.account_number})")
-        print("=" * 90)
+        open_block = "```" if discord else ""
+        close_block = "```" if discord else ""
+
+        print(f"{open_block}ACCOUNT SUMMARY ({self.account_number})")
         print(f"Net Liq:       ${status.get('net_liquidating_value', 0):,.2f}")
         print(f"Equity BP:     ${status.get('equity_buying_power', 0):,.2f}")
-        print(f"Cash Balance:  ${status.get('cash_balance', 0):,.2f}")
+        print(f"Cash Balance:  ${status.get('cash_balance', 0):,.2f}{close_block}")
         
         # 2. Positions Table
         positions = self.get_positions()
         
         if not positions:
-            print("\nNo open positions found.")
+            print(f"{open_block}No open positions found.{close_block}")
             return
 
         # Fetch market data for all positions for accurate P/L
@@ -196,9 +197,7 @@ class PortfolioAgent:
         except Exception as e:
             self.logger.warning(f"Failed to fetch market data: {e}. P/L may be inaccurate.")
 
-        print("\n" + "=" * 130)
-        print(f"📊 OPEN POSITIONS ({len(positions)} legs)")
-        print("=" * 130)
+        print(f"{open_block}OPEN POSITIONS ({len(positions)} legs)")
         
         grouped_data = self._group_positions(positions)
         
@@ -206,7 +205,7 @@ class PortfolioAgent:
         # Qty | Symbol/Strike | Exp | DTE | Trade Prc | Mark | Value | P/L Open | P/L %
         header = f"{'Qty':>5} | {'Symbol/Strike':<22} | {'Exp':<8} | {'DTE':>4} | {'Trd Prc':>9} | {'Mark':>9} | {'Value':>10} | {'P/L Opn':>10} | {'P/L %':>7}"
         print(header)
-        print("-" * 130)
+        print(close_block)
 
         for underlying, strategies in grouped_data.items():
             print(f" ► {underlying}")
@@ -327,4 +326,4 @@ class PortfolioAgent:
                             pl_pct = (avg_open_price - mark) / avg_open_price
 
                     print(f"{qty:>5} |   {display_name:<20} | {exp_str:<8} | {dte_str:>4} | ${avg_open_price:>8.2f} | ${mark:>8.2f} | ${market_value:>9.2f} | ${pl_open:>9.2f} | {pl_pct:>6.1%}")
-            print("-" * 130)
+            print(close_block)

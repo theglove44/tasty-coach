@@ -5,7 +5,7 @@ import logging
 from typing import Optional, List
 
 from dotenv import load_dotenv
-from tastytrade import Session, OAuthSession, Account
+from tastytrade import Session, Account
 from tastytrade.utils import now_in_new_york
 
 load_dotenv()
@@ -81,7 +81,7 @@ class TastyClient:
     def authenticate(self) -> bool:
         try:
             self.logger.info(f"Authenticating (test mode: {self.config.is_test})")
-            self.session = OAuthSession(
+            self.session = Session(
                 self.config.client_secret,
                 self.config.refresh_token,
                 is_test=self.config.is_test,

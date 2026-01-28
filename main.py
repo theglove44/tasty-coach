@@ -23,14 +23,15 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-watchlists", "-l", action="store_true", help="List available watchlists")
     parser.add_argument("--market", "-m", action="store_true", help="Check Market Status")
     parser.add_argument("--snapshot", "-s", action="store_true", help="Market Snapshot")
-    parser.add_argument("--report", "-r", action="store_true", help="Generate Account & Positions Report")
+    parser.add_argument("--report", "-r", action="store_true", help="Generate Account Report (use --discord for Discord format)")
+    parser.add_argument("--discord", "-d", action="store_true", help="Format output for Discord")
     parser.add_argument(
         "--account",
         type=str,
         help="Account number to use (e.g. 5WW46136). Alternatively set TASTY_ACCOUNT_NUMBER in .env",
     )
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
-    parser.add_argument("--debug", "-d", action="store_true", help="Enable debug logging")
+    parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
 
 
@@ -130,7 +131,7 @@ def main() -> int:
 
         if args.report:
             print("\nGenerating Account Report...")
-            portfolio.print_positions_report()
+            portfolio.print_positions_report(discord=args.discord)
             return 0
 
         if args.list_watchlists:
