@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 
 from tastytrade import Session, Account
+from tastytrade.market_data import get_market_data_by_type
 
 
 class PortfolioAgent:
@@ -12,11 +13,16 @@ class PortfolioAgent:
         self.session = session
         self.logger = logging.getLogger(__name__)
         self.account_number = account_number
-        self.account: Optional[Account] = self._get_account()
+        self.account: Optional[Account] = None  # Set via async init
 
-    def _get_account(self) -> Optional[Account]:
+    async def init(self) -> 'PortfolioAgent':
+        """Async initialization - call after creating instance."""
+        self.account = await self._get_account()
+        return self
+
+    async def _get_account(self) -> Optional[Account]:
         try:
-            accounts = Account.get(self.session)
+            accounts = await Account.get(self.session)
             if not accounts:
                 return None
 
@@ -34,12 +40,12 @@ class PortfolioAgent:
             self.logger.error(f"Error fetching accounts: {e}")
             return None
 
-    def get_account_status(self) -> Dict[str, Any]:
+    async def get_account_status(self) -> Dict[str, Any]:
         """Fetch basic account balance info."""
         if not self.account:
             return {}
         try:
-            balances = self.account.get_balances(self.session)
+            balances = await self.account.get_balances(self.session)
             return {
                 "net_liquidating_value": float(balances.net_liquidating_value),
                 "equity_buying_power": float(balances.equity_buying_power),
@@ -55,12 +61,12 @@ class PortfolioAgent:
             self.logger.error(f"Error fetching account status: {e}")
             return {}
 
-    def get_positions(self) -> List[Any]:
+    async def get_positions(self) -> List[Any]:
         """Fetch all current open positions."""
         if not self.account:
             return []
         try:
-            return self.account.get_positions(self.session)
+            return await self.account.get_positions(self.session)
         except Exception as e:
             self.logger.error(f"Error fetching positions: {e}")
             return []
@@ -122,7 +128,7 @@ class PortfolioAgent:
             strategies = []
             
             # 1. Process Option Chains by Expiration
-            for exp_date, legs in data['by_date'].items():
+            for exp_date, legs in data.get('by_date', {}).items():
                 # Simple Heuristics
                 # Sort by strike
                 legs.sort(key=lambda x: x._parsed_details['strike'])
@@ -153,7 +159,7 @@ class PortfolioAgent:
                 })
             
             # 2. Add Misc (Stock)
-            if data['misc']:
+            if data.get('misc'):
                 strategies.append({
                     'name': 'Stock / Equity',
                     'legs': data['misc']
@@ -163,12 +169,10 @@ class PortfolioAgent:
             
         return results
 
-    def print_positions_report(self, discord: bool = False):
+    async def print_positions_report(self, discord: bool = False):
         """Prints a CLI-friendly report of account balances and open positions."""
-        from tastytrade.market_data import get_market_data_by_type
-
         # 1. Account Summary
-        status = self.get_account_status()
+        status = await self.get_account_status()
         if not status:
             print("❌ Could not fetch account status.")
             return
@@ -182,7 +186,7 @@ class PortfolioAgent:
         print(f"Cash Balance:  ${status.get('cash_balance', 0):,.2f}{close_block}")
         
         # 2. Positions Table
-        positions = self.get_positions()
+        positions = await self.get_positions()
         
         if not positions:
             print(f"{open_block}No open positions found.{close_block}")
@@ -192,7 +196,7 @@ class PortfolioAgent:
         symbols = [p.symbol for p in positions]
         quotes_map = {}
         try:
-            quotes = get_market_data_by_type(self.session, symbols)
+            quotes = await get_market_data_by_type(self.session, symbols)
             quotes_map = {q.symbol: q for q in quotes}
         except Exception as e:
             self.logger.warning(f"Failed to fetch market data: {e}. P/L may be inaccurate.")
@@ -202,7 +206,6 @@ class PortfolioAgent:
         grouped_data = self._group_positions(positions)
         
         # Header
-        # Qty | Symbol/Strike | Exp | DTE | Trade Prc | Mark | Value | P/L Open | P/L %
         header = f"{'Qty':>5} | {'Symbol/Strike':<22} | {'Exp':<8} | {'DTE':>4} | {'Trd Prc':>9} | {'Mark':>9} | {'Value':>10} | {'P/L Opn':>10} | {'P/L %':>7}"
         print(header)
         print(close_block)
@@ -216,14 +219,12 @@ class PortfolioAgent:
                 
                 for pos in strat['legs']:
                     qty = int(getattr(pos, 'quantity', 0))
-                    # Handle Short qty
                     if getattr(pos, 'quantity_direction', 'Long') == 'Short':
                         qty = -abs(qty)
                     
                     multiplier = int(getattr(pos, 'multiplier', 100) or 100)
                     avg_open_price = float(getattr(pos, 'average_open_price', 0) or 0)
                     
-                    # Mark
                     mark = 0.0
                     if pos.symbol in quotes_map:
                         mark = float(quotes_map[pos.symbol].mark)
@@ -232,51 +233,20 @@ class PortfolioAgent:
                          if qty != 0:
                              mark = abs(mv / (qty * multiplier))
                     
-                    # Entry Cost (Net)
-                    # For Long: positive cost. For Short: negative cost (credit).
                     strat_entry_cost += (qty * avg_open_price * multiplier)
-                    
-                    # P/L
                     strat_pl_open += (mark - avg_open_price) * qty * multiplier
 
-                # Strategy P/L %
-                # If cost is 0 (unlikely), avoid div 0
                 strat_pl_pct = 0.0
                 if abs(strat_entry_cost) > 0.01:
-                    # For Credit trades (negative cost), P/L is positive when Mark < Open. 
-                    # We want % of max profit (credit)? Or % of captured value?
-                    # Standard ROI: P/L / Capital.
-                    # But for short premium, 'Capital' is margin, which we don't have easily here.
-                    # Usually traders want "% of Max Profit" for credit spreads.
-                    # Max Profit = Credit. 
-                    # return P/L / Abs(Credit).
                     strat_pl_pct = strat_pl_open / abs(strat_entry_cost)
 
-                # Print Strategy Header with Totals
-                # Align P/L to the columns: P/L Opn is ~ column 100-110, P/L % ~ 120
-                # Header: ... | Value      | P/L Opn    | P/L %
-                # We can construct a string that pads spaces until those columns.
-                # Strategy Name len varies.
-                # Use fixed spacing logic or simplified 
-                
-                # Let's align P/L Opn to be roughly under the "P/L Opn" header
-                # The header layout is:
-                # Qty (5) | Sym (22) | Exp (8) | DTE (4) | Trd Prc (9) | Mark (9) | Value (10) | P/L Opn (10) | P/L % (7)
-                # Separators: " | " (3 chars)
-                # Lengths: 5+3+22+3+8+3+4+3+9+3+9+3+10+3 = 88 chars to start of P/L Opn
-                
                 prefix = f"    └── {strat['name']}"
-                padding = " " * (88 - len(prefix))
-                
-                # If prefix is too long, just space it out a bit
-                if len(prefix) > 85:
-                    padding = "   "
+                padding = " " * max(3, 88 - len(prefix))
                 
                 print(f"{prefix}{padding}{strat_pl_open:>10.2f} | {strat_pl_pct:>6.1%}")
 
                 for pos in strat['legs']:
                     qty = int(getattr(pos, 'quantity', 0))
-                    # Handle Short qty
                     if getattr(pos, 'quantity_direction', 'Long') == 'Short':
                         qty = -abs(qty)
                     
@@ -287,24 +257,19 @@ class PortfolioAgent:
                     exp_str = "-"
                     display_name = getattr(pos, 'symbol', 'Unknown')
 
-                    passed_expiration = False
                     if details:
-                        # Option
                         display_name = f"{details['strike']:.1f} {details['type'][0]}"
                         exp_str = details['expiration'].strftime('%y-%m-%d')
                         days = (details['expiration'] - date.today()).days
                         dte_str = str(days)
-                        if days < 0: passed_expiration = True
                     else:
-                        # Stock or other
-                        if hasattr(pos, 'expires_at') and pos.expires_at: # Future / Future Option
+                        if hasattr(pos, 'expires_at') and pos.expires_at:
                             exp_date = pos.expires_at.date()
                             exp_str = exp_date.strftime('%y-%m-%d')
                             dte_str = str((exp_date - date.today()).days)
 
                     avg_open_price = float(getattr(pos, 'average_open_price', 0) or 0)
                     
-                    # Determine Mark
                     mark = 0.0
                     if pos.symbol in quotes_map:
                         mark = float(quotes_map[pos.symbol].mark)
@@ -314,15 +279,13 @@ class PortfolioAgent:
                              mark = abs(mv / (qty * multiplier))
 
                     market_value = mark * qty * multiplier
-                    
                     pl_open = (mark - avg_open_price) * qty * multiplier
                     
-                    # P/L %
                     pl_pct = 0.0
                     if avg_open_price != 0:
                         if qty > 0:
                             pl_pct = (mark - avg_open_price) / avg_open_price
-                        else: # Short
+                        else:
                             pl_pct = (avg_open_price - mark) / avg_open_price
 
                     print(f"{qty:>5} |   {display_name:<20} | {exp_str:<8} | {dte_str:>4} | ${avg_open_price:>8.2f} | ${mark:>8.2f} | ${market_value:>9.2f} | ${pl_open:>9.2f} | {pl_pct:>6.1%}")

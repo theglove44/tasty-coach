@@ -22,11 +22,11 @@ class RiskManager:
         self.account: Optional[Account] = None
         self.market_schedule = MarketSchedule(session)
 
-    def _get_account(self) -> Account:
+    async def _get_account(self) -> Account:
         if self.account:
             return self.account
 
-        accounts = Account.get(self.session)
+        accounts = await Account.get(self.session)
         if not accounts:
             raise ValueError("No accounts found.")
 
@@ -42,9 +42,9 @@ class RiskManager:
         return self.account
 
     async def calculate_portfolio_risk(self) -> Dict[str, Any]:
-        account = self._get_account()
-        balances = account.get_balances(self.session)
-        positions = account.get_positions(self.session)
+        account = await self._get_account()
+        balances = await account.get_balances(self.session)
+        positions = await account.get_positions(self.session)
 
         nlv = extract_decimal(getattr(balances, "net_liquidating_value", None))
         bp = extract_decimal(getattr(balances, "equity_buying_power", None))

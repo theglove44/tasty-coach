@@ -2,6 +2,7 @@
 """Tastytrade Auto - Orchestrator Agent"""
 
 import sys
+import asyncio
 import argparse
 import logging
 from typing import Optional
@@ -24,6 +25,8 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--market", "-m", action="store_true", help="Check Market Status")
     parser.add_argument("--snapshot", "-s", action="store_true", help="Market Snapshot")
     parser.add_argument("--report", "-r", action="store_true", help="Generate Account Report (use --discord for Discord format)")
+    parser.add_argument("--review-position", type=str, metavar="SYMBOL", help="Review position and show roll scenarios for underlying (e.g. --review-position SLV)")
+    parser.add_argument("--output", "-o", type=str, help="Output file path for JSON export (use with --review-position)")
     parser.add_argument("--discord", "-d", action="store_true", help="Format output for Discord")
     parser.add_argument(
         "--account",
@@ -36,7 +39,6 @@ def setup_argument_parser() -> argparse.ArgumentParser:
 
 
 def _warn_if_not_in_venv() -> None:
-    # Helpful nudge: tastytrade requires Python 3.10+ and this repo already has a venv.
     if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
         print(
             "⚠️  You are not running inside the project venv. "
@@ -44,7 +46,7 @@ def _warn_if_not_in_venv() -> None:
         )
 
 
-def main() -> int:
+async def async_main() -> int:
     _warn_if_not_in_venv()
 
     parser = setup_argument_parser()
@@ -64,7 +66,7 @@ def main() -> int:
             print("Testing connection...")
             if client.authenticate():
                 print("✅ Authentication successful")
-                accounts = client.get_accounts()
+                accounts = await client.get_accounts()
                 print(f"✅ Found {len(accounts)} accounts")
                 for a in accounts:
                     acct_num = getattr(a, "account_number", "?")
@@ -88,9 +90,8 @@ def main() -> int:
 
         account_number: Optional[str] = args.account or client.config.account_number
 
-        # If the user has multiple accounts, force explicit selection to avoid
-        # accidentally checking the wrong one.
-        accounts = client.get_accounts()
+        # If the user has multiple accounts, force explicit selection
+        accounts = await client.get_accounts()
         if len(accounts) > 1 and not account_number:
             print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
             for a in accounts:
@@ -102,6 +103,7 @@ def main() -> int:
 
         scanner = ScannerAgent(session, threshold=args.threshold or client.config.ivr_threshold)
         portfolio = PortfolioAgent(session, account_number=account_number)
+        await portfolio.init()  # Async initialization
         strategy = StrategyAgent(session)
         risk_manager = RiskManager(session, account_number=account_number)
         market_schedule = MarketSchedule(session)
@@ -112,45 +114,58 @@ def main() -> int:
 
         if args.snapshot:
             print("\n📸 Fetching Market Snapshot...")
-            # Try to get symbols from "Snapshot" watchlist
-            # We must set equity_only=False to include futures/indices
-            symbols = scanner.get_symbols_from_watchlist("Snapshot", equity_only=False)
+            symbols = await scanner.get_symbols_from_watchlist("Snapshot", equity_only=False)
             
             if not symbols:
                 print("❌ Watchlist 'Snapshot' not found or empty.")
                 print("   Please create a watchlist named 'Snapshot' with your desired symbols (e.g. /ESH6, /NQH6, VIX)")
-                # Optional: Fallback to defaults? 
-                # User specifically asked for 'Snapshot' watchlist so let's stick to that.
-                # However, for testing, if I don't have it, I can temporarily use hardcoded list if debug?
-                # For now, stick to user requirements.
                 return 1
             
-            snapshot_data = scanner.get_market_snapshot(symbols)
+            snapshot_data = await scanner.get_market_snapshot(symbols)
             scanner.print_snapshot(snapshot_data)
             return 0
 
         if args.report:
             print("\nGenerating Account Report...")
-            portfolio.print_positions_report(discord=args.discord)
+            await portfolio.print_positions_report(discord=args.discord)
+            return 0
+
+        if args.review_position:
+            from agents.reviewer import ReviewerAgent
+
+            print(f"\n📋 Reviewing positions for {args.review_position}...")
+            reviewer = await ReviewerAgent(session, account_number=account_number).init()
+
+            results = await reviewer.review_positions(underlying_filter=args.review_position)
+
+            if not results:
+                print(f"❌ No positions found for {args.review_position}")
+                return 1
+
+            # Print formatted report (or JSON if --output flag provided)
+            if args.output:
+                reviewer.export_json(results, args.output)
+            else:
+                reviewer.print_review_report(results, discord=args.discord)
+
             return 0
 
         if args.list_watchlists:
             from tastytrade.watchlists import PrivateWatchlist, PublicWatchlist
 
             print("\nPrivate Watchlists:")
-            for w in PrivateWatchlist.get(session):
+            for w in await PrivateWatchlist.get(session):
                 print(f"  • {w.name}")
             print("\nPublic Watchlists:")
-            for w in PublicWatchlist.get(session):
+            for w in await PublicWatchlist.get(session):
                 print(f"  • {w.name}")
             return 0
 
         if args.watchlist or args.health:
             # 1. Account Risk & Health Check
             print("\n🏥 Checking Portfolio Health...")
-            import asyncio
 
-            risk_report = asyncio.run(risk_manager.calculate_portfolio_risk())
+            risk_report = await risk_manager.calculate_portfolio_risk()
 
             print(f"💰 NLV: ${risk_report['nlv']:,.2f}")
             print(
@@ -195,10 +210,10 @@ def main() -> int:
                 return 0
 
             # 2. Manage existing positions
-            positions = portfolio.get_positions()
+            positions = await portfolio.get_positions()
             if positions:
                 print("\n🔄 Checking existing positions for management...")
-                to_close = strategy.manage_positions(positions)
+                to_close = await strategy.manage_positions(positions)
                 if to_close:
                     print(f"⚠️ {len(to_close)} positions hit exit criteria:")
                     for item in to_close:
@@ -208,27 +223,22 @@ def main() -> int:
 
             # 3. Scan for new opportunities
             print(f"\n🔍 Scanning watchlist: {args.watchlist}")
-            symbols = scanner.get_symbols_from_watchlist(args.watchlist)
+            symbols = await scanner.get_symbols_from_watchlist(args.watchlist)
             if not symbols:
                 print(f"❌ No symbols found in {args.watchlist}")
                 return 1
 
             print(f"⏳ Analyzing {len(symbols)} symbols...")
-            results = scanner.scan_ivr(symbols)
+            results = await scanner.scan_ivr(symbols)
             targets = scanner.get_high_ivr_targets(results)
             print(scanner.generate_report(targets))
 
             if targets:
                 print(f"\n🔍 Screening strategies for {len(targets)} high IVR targets...")
                 all_strategy_targets = []
-                import asyncio
-                
-                # Removed GEX processing per user request
 
                 for t in targets:
-                    strategy_targets = asyncio.run(
-                        strategy.screen_strategies(t.symbol, t.iv_rank)
-                    )
+                    strategy_targets = await strategy.screen_strategies(t.symbol, t.iv_rank)
                     all_strategy_targets.extend(strategy_targets)
 
                 if all_strategy_targets:
@@ -247,7 +257,14 @@ def main() -> int:
         return 130
     except Exception as e:
         print(f"❌ Error: {e}")
+        if args.debug:
+            import traceback
+            traceback.print_exc()
         return 1
+
+
+def main() -> int:
+    return asyncio.run(async_main())
 
 
 if __name__ == "__main__":

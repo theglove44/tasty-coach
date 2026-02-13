@@ -16,7 +16,7 @@ import pandas as pd
 from tastytrade import Session, DXLinkStreamer
 from tastytrade.dxfeed import Greeks, Quote, Summary, Trade
 from tastytrade.instruments import Option, get_option_chain
-from tastytrade.market_data import a_get_market_data_by_type
+from tastytrade.market_data import get_market_data_by_type
 
 # Constants
 GEX_REVERSION_THRESHOLD = 1_000_000_000  # $1B Net GEX threshold
@@ -260,7 +260,7 @@ class GEXAgent:
             for i in range(0, len(all_symbols), 100):
                 chunk = all_symbols[i:i + 100]
                 try:
-                    market_data = await a_get_market_data_by_type(self.session, options=chunk)
+                    market_data = await get_market_data_by_type(self.session, options=chunk)
                     for md in market_data:
                         entry = {}
                         if md.open_interest is not None:

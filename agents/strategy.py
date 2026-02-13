@@ -113,7 +113,7 @@ class StrategyAgent:
 
         self.logger.info(f"Screening strategies for {symbol} (IVR: {current_ivr}%)...")
         try:
-            chains = NestedOptionChain.get(self.session, symbol)
+            chains = await NestedOptionChain.get(self.session, symbol)
             if not chains: return []
             chain = chains[0]
             target_exp = self._get_target_expiration(chain)
@@ -122,7 +122,7 @@ class StrategyAgent:
                 return []
             
             from tastytrade.instruments import get_option_chain
-            full_chain = get_option_chain(self.session, symbol)
+            full_chain = await get_option_chain(self.session, symbol)
             expiry_str = target_exp.expiration_date.strftime('%Y-%m-%d')
             options = full_chain.get(target_exp.expiration_date)
             if not options:
@@ -174,7 +174,7 @@ class StrategyAgent:
                     self.logger.debug(f"No {target_width} width strike for {symbol} {readable_type}")
                     continue
                     
-                prices = get_market_data_by_type(self.session, [best_short.symbol, best_long.symbol])
+                prices = await get_market_data_by_type(self.session, options=[best_short.symbol, best_long.symbol])
                 if len(prices) < 2: continue
                 
                 short_mark = float(next(p for p in prices if p.symbol == best_short.symbol).mark)
@@ -281,7 +281,7 @@ class StrategyAgent:
 
         return strategies
 
-    def manage_positions(self, positions: List[Any]) -> List[Dict]:
+    async def manage_positions(self, positions: List[Any]) -> List[Dict]:
         """Check for 50% profit target or 21 DTE time stop."""
         to_close = []
         today = date.today()

@@ -97,7 +97,10 @@ class TastyClient:
                 return None
 
         if self.is_session_expired():
-            self.session.refresh()
+            # SDK v12+ auto-refreshes, but if expired, re-authenticate
+            self.session = None
+            if not self.authenticate():
+                return None
 
         return self.session
 
@@ -109,14 +112,15 @@ class TastyClient:
         except Exception:
             return True
 
-    def get_accounts(self) -> List[Account]:
+    async def get_accounts(self) -> List[Account]:
+        """Get all accounts (async)."""
         session = self.get_session()
         if not session:
             return []
-        return Account.get(session)
+        return await Account.get(session)
 
-    def get_account(self, account_number: Optional[str] = None) -> Account:
-        """Return the selected account by number.
+    async def get_account(self, account_number: Optional[str] = None) -> Account:
+        """Return the selected account by number (async).
 
         If multiple accounts exist and none is specified, raise to avoid accidentally
         using the wrong one.
@@ -126,7 +130,7 @@ class TastyClient:
         if not session:
             raise ValueError("Failed to establish session")
 
-        accounts = Account.get(session)
+        accounts = await Account.get(session)
         if not accounts:
             raise ValueError("No accounts found")
 
