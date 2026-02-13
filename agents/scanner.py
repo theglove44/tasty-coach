@@ -123,7 +123,23 @@ class ScannerAgent:
                             pass
                             
                     if not found:
-                         # Fallback to original
+                        # Try direct Future lookup as final fallback
+                        try:
+                            from tastytrade.instruments import Future
+                            futures_list = await Future.get(self.session, product_codes=[product_code])
+                            # Get front-month (earliest expiration that's active)
+                            active_futures = sorted(
+                                [fut for fut in futures_list if fut.active],
+                                key=lambda x: x.expiration_date
+                            )
+                            if active_futures:
+                                resolved_futures.append(active_futures[0].symbol)
+                                found = True
+                        except Exception:
+                            pass
+                    
+                    if not found:
+                         # Final fallback to original (may fail)
                          resolved_futures.append(f)
 
                 data = await get_market_data_by_type(self.session, futures=resolved_futures)
