@@ -95,24 +95,27 @@ class ScannerAgent:
                     product_code = f.lstrip('/')
                     
                     found = False
+                    
+                    # For futures, use Future.get() to resolve to active contract FIRST
+                    # This is more reliable than option chains which return root symbols
                     try:
-                        # Try future option chain first (most reliable for roots)
-                        chain = await get_future_option_chain(self.session, product_code)
-                        if chain:
-                            # Use first exp, first strike to find underlying
-                            first_exp = list(chain.keys())[0]
-                            strike = chain[first_exp][0]
-                            if hasattr(strike, 'underlying_symbol'):
-                                resolved_futures.append(strike.underlying_symbol)
-                                found = True
+                        from tastytrade.instruments import Future
+                        futures_list = await Future.get(self.session, product_codes=[product_code])
+                        # Get front-month (earliest expiration that's active)
+                        active_futures = sorted(
+                            [fut for fut in futures_list if fut.active],
+                            key=lambda x: x.expiration_date
+                        )
+                        if active_futures:
+                            resolved_futures.append(active_futures[0].symbol)
+                            found = True
                     except Exception:
                         pass
                     
                     if not found:
-                        # If failed, it might be already a valid symbol or equity option chain?
-                        # Or maybe get_option_chain works (like for /ES sometimes?)
+                        # Fallback: try future option chain
                         try:
-                            chain = await get_option_chain(self.session, f)
+                            chain = await get_future_option_chain(self.session, product_code)
                             if chain:
                                 first_exp = list(chain.keys())[0]
                                 strike = chain[first_exp][0]
@@ -121,20 +124,17 @@ class ScannerAgent:
                                     found = True
                         except Exception:
                             pass
-                            
+                    
                     if not found:
-                        # Try direct Future lookup as final fallback
+                        # Fallback: try regular option chain
                         try:
-                            from tastytrade.instruments import Future
-                            futures_list = await Future.get(self.session, product_codes=[product_code])
-                            # Get front-month (earliest expiration that's active)
-                            active_futures = sorted(
-                                [fut for fut in futures_list if fut.active],
-                                key=lambda x: x.expiration_date
-                            )
-                            if active_futures:
-                                resolved_futures.append(active_futures[0].symbol)
-                                found = True
+                            chain = await get_option_chain(self.session, f)
+                            if chain:
+                                first_exp = list(chain.keys())[0]
+                                strike = chain[first_exp][0]
+                                if hasattr(strike, 'underlying_symbol'):
+                                    resolved_futures.append(strike.underlying_symbol)
+                                    found = True
                         except Exception:
                             pass
                     

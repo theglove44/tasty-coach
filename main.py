@@ -223,7 +223,7 @@ async def async_main() -> int:
 
             # 3. Scan for new opportunities
             print(f"\n🔍 Scanning watchlist: {args.watchlist}")
-            symbols = await scanner.get_symbols_from_watchlist(args.watchlist)
+            symbols = await scanner.get_symbols_from_watchlist(args.watchlist, equity_only=False)
             if not symbols:
                 print(f"❌ No symbols found in {args.watchlist}")
                 return 1
