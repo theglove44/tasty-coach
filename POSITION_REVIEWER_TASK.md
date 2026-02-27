@@ -1,4 +1,7 @@
-# Position Reviewer Feature - Task Spec
+# Position Reviewer Feature - Task Spec (COMPLETED)
+
+> **Status**: Implemented. See `IMPLEMENTATION_SUMMARY.md` for actual implementation details.
+> CLI flag became `--review-position SYMBOL` (not `-r`). OCC parsing stayed in `portfolio.py` instead of a separate module.
 
 ## Overview
 Build a position review feature for tasty-coach that enables AI-assisted analysis of open positions with roll/management recommendations.

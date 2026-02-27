@@ -78,17 +78,17 @@ Modify the main workflow to:
 3. Display GEX regime info in output
 
 ```python
-# After risk check, before strategy screening:
+# Inside async_main(), after risk check, before strategy screening:
 print("\n📊 Analyzing Market Gamma Exposure...")
 from agents.gex import GEXAgent
 gex_agent = GEXAgent(session)
 # Use SPY as market proxy (faster than SPX)
-gex_result = asyncio.run(gex_agent.calculate_gex('SPY', max_dte=7))
+gex_result = await gex_agent.calculate_gex('SPY', max_dte=7)
 print(gex_agent.analyze_regime(gex_result))
 
 # Then in strategy screening loop:
-strategy_targets = asyncio.run(
-    strategy.screen_strategies_with_gex(t.symbol, t.iv_rank, gex_result)
+strategy_targets = await strategy.screen_strategies_with_gex(
+    t.symbol, t.iv_rank, gex_result
 )
 ```
 
@@ -120,8 +120,8 @@ Should show:
 3. Warnings if short strikes beyond gamma walls
 
 ## Acceptance Criteria
-- [ ] StrategyTarget includes GEX fields
-- [ ] GEX analysis runs before strategy screening  
-- [ ] Short strikes beyond gamma walls trigger warnings
-- [ ] Report shows GEX regime context
-- [ ] No breaking changes to existing functionality
+- [x] StrategyTarget includes GEX fields (implemented in `agents/strategy.py`)
+- [ ] GEX analysis runs before strategy screening (not yet wired into main.py workflow)
+- [x] Short strikes beyond gamma walls trigger warnings (`screen_strategies_with_gex()` implemented)
+- [ ] Report shows GEX regime context (partially done)
+- [x] No breaking changes to existing functionality

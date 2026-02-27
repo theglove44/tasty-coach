@@ -5,18 +5,26 @@ Create a Python application that connects to your tastytrade account, retrieves 
 
 ## Project Structure
 ```
-tastytrade-ivr-scanner/
-├── src/
-│   ├── __init__.py
-│   ├── auth.py           # Authentication and session management
-│   ├── watchlist.py      # Watchlist operations
-│   ├── market_data.py    # Market data and IVR calculations
-│   ├── scanner.py        # Main scanning logic
-│   └── config.py         # Configuration management
+tasty-coach/
+├── agents/
+│   ├── scanner.py          # IVR scanning & watchlist resolution
+│   ├── portfolio.py        # Position tracking & reporting
+│   ├── strategy.py         # Strategy screening (verticals, iron condors)
+│   ├── reviewer.py         # Position review & roll scenario analysis
+│   ├── manager.py          # Risk management & portfolio health
+│   └── gex.py             # Gamma Exposure (GEX) analysis
+├── utils/
+│   ├── tasty_client.py     # OAuth authentication & session management
+│   ├── roll_calculator.py  # Pure roll scenario calculations
+│   ├── market_schedule.py  # Market session & hours checking
+│   └── dx_feed.py         # Real-time data streaming (dxLink)
+├── tests/
+│   └── test_risk_manager.py
+├── main.py                 # Entry point & CLI orchestrator
+├── position_monitor.py     # Automated position monitoring
 ├── requirements.txt
-├── .env                  # Environment variables for credentials
-├── main.py              # Entry point
-├── .agents              # Agent automation configuration
+├── .env                    # OAuth credentials (not committed)
+├── .agents                 # Agent automation configuration
 └── README.md
 ```
 
@@ -34,8 +42,7 @@ tastytrade-ivr-scanner/
 - Add connection validation
 
 **Key Files**:
-- `src/auth.py` - Authentication logic
-- `src/config.py` - Configuration management
+- `utils/tasty_client.py` - OAuth authentication & session management
 - `.env` - Secure credential storage
 - `requirements.txt` - Project dependencies
 
@@ -55,7 +62,7 @@ tastytrade-ivr-scanner/
 - Filter for equity symbols only (options IVR handled separately)
 
 **Key Files**:
-- `src/watchlist.py` - Watchlist operations
+- `agents/scanner.py` - Watchlist & IVR scanning
 
 **Success Criteria**:
 - Retrieve symbols from existing watchlists
@@ -79,7 +86,8 @@ tastytrade-ivr-scanner/
 - Handle symbols without options
 
 **Key Files**:
-- `src/market_data.py` - Market data and IVR calculations
+- `agents/scanner.py` - Market data and IVR calculations
+- `utils/dx_feed.py` - Real-time data streaming
 
 **Success Criteria**:
 - Accurate IVR calculations
@@ -98,7 +106,7 @@ tastytrade-ivr-scanner/
 - Implement error recovery and logging
 
 **Key Files**:
-- `src/scanner.py` - Main scanning logic
+- `agents/scanner.py` - Main scanning logic
 - `main.py` - Entry point and CLI interface
 
 **Success Criteria**:
@@ -106,23 +114,25 @@ tastytrade-ivr-scanner/
 - Clear, actionable output
 - Robust error handling
 
-### Phase 5: Enhancement & Optimization
+### Phase 5: Enhancement & Optimization ⏳ (Current)
 **Objective**: Add advanced features and optimizations
 
-**Tasks**:
-- Add email/SMS alert functionality
-- Implement scheduled scanning
-- Create new watchlists from filtered results
-- Add historical IVR trending
-- Performance optimization and batch processing
-- Add configuration file support
-- Create detailed logging and metrics
+**Completed**:
+- ✅ Position Reviewer with roll scenario analysis (`agents/reviewer.py`, `utils/roll_calculator.py`)
+- ✅ Risk Management with BP monitoring (`agents/manager.py`)
+- ✅ Strategy Screening for verticals & iron condors (`agents/strategy.py`)
+- ✅ Gamma Exposure (GEX) analysis (`agents/gex.py`)
+- ✅ Market schedule checking (`utils/market_schedule.py`)
+- ✅ Position monitoring with alerts (`position_monitor.py`)
+- ✅ Multi-account support
+- ✅ Discord output formatting
 
-**Optional Features**:
-- Web dashboard interface
-- Database storage for historical tracking
-- Multiple threshold alerts
-- Integration with other trading platforms
+**Remaining / Future**:
+- GEX integration into main scan workflow (partially done)
+- Historical IVR trending
+- Probability of profit calculations
+- Auto-execute roll orders via API
+- Email/SMS alert functionality
 
 ## Technical Requirements
 
@@ -138,7 +148,7 @@ requests>=2.31.0
 ```
 TASTYTRADE_CLIENT_SECRET=your_client_secret
 TASTYTRADE_REFRESH_TOKEN=your_refresh_token
-TASTY_ACCOUNT_ID=your_account_id
+TASTY_ACCOUNT_NUMBER=your_account_number
 TASTYTRADE_IS_TEST=false
 IVR_THRESHOLD=25
 LOG_LEVEL=INFO

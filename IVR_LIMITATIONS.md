@@ -36,11 +36,18 @@ This requires:
 - ✅ Watchlist retrieval and symbol extraction
 - ✅ Real-time IV fetching via Greeks stream (when available)
 - ✅ Market data and option chain analysis
+- ✅ **IVR via Market Metrics API** — `metric.implied_volatility_index_rank` returns IVR values directly
+- ✅ **IV Percentile** — `metric.implied_volatility_percentile` also available
+- ✅ **Current IV** — `metric.implied_volatility_index`
 
-### What's Limited:
-- ⚠️ IVR calculation returns `None` (no historical data)
-- ⚠️ Fallback to placeholder calculations when real Greeks unavailable
-- ⚠️ Cannot match tastytrade's actual IVR values
+### Resolved:
+- ~~IVR calculation returns `None`~~ — Now works via the market metrics endpoint (`get_market_metrics()`)
+- The metrics API provides pre-calculated IVR without needing historical IV data
+
+### Remaining Limitations:
+- ⚠️ Raw historical IV data (52-week high/low) still not available via SDK
+- ⚠️ Custom IVR calculations not possible — must rely on Tastytrade's pre-calculated values
+- ⚠️ Some symbols may still return `None` if metrics are unavailable
 
 ## Solutions and Alternatives
 
@@ -70,18 +77,17 @@ For accurate IVR data, continue using:
 - tastytrade's web platform for screening
 - This SDK for execution and order management
 
-## Recommended Approach
+## Current Approach
 
-For immediate use:
-1. **Use current IV as primary metric** instead of IVR
-2. **Set IV thresholds** (e.g., > 30% for high volatility)
-3. **Monitor Greeks data quality** and implement retry logic
-4. **Document limitations clearly** in user-facing output
+The IVR limitation has been largely resolved by using the market metrics API:
+1. **IVR via `get_market_metrics()`** — Primary metric, returns pre-calculated IVR
+2. **IV Percentile** also available from the same endpoint
+3. **Threshold scanning** works reliably with `implied_volatility_index_rank`
 
-For production use:
+For advanced use cases requiring raw historical IV:
 1. **Integrate third-party IV data** if budget allows
-2. **Build historical IV collection** for long-term accuracy
-3. **Hybrid approach**: Use SDK for execution, external data for screening
+2. **Build historical IV collection** for custom calculations
+3. **Hybrid approach**: Use SDK metrics for screening, external data for deep analysis
 
 ## Code Changes Made
 

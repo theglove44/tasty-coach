@@ -1,30 +1,32 @@
-# Tastytrade IVR Scanner
+# Tasty-Coach
 
-A Python application that scans your tastytrade watchlists and identifies symbols with high Implied Volatility Rank (IVR). This tool helps options traders quickly find potential trading opportunities by flagging symbols with elevated implied volatility.
+A Python trading assistant that connects to your Tastytrade account for IVR scanning, strategy screening, position review with roll analysis, risk management, and gamma exposure (GEX) analysis.
 
 ## Features
 
-- 🔐 Secure authentication with tastytrade API
-- 📊 Automated IVR calculation for watchlist symbols
-- ⚡ Configurable IVR threshold filtering (default: 25%)
-- 📋 Support for multiple watchlists
-- 🔄 Session management with remember tokens
-- 📝 Comprehensive logging and error handling
+- Automated IVR scanning across watchlists with configurable thresholds
+- Strategy screening for vertical credit spreads and iron condors
+- Position review with roll scenario analysis (down, out, down-and-out)
+- Portfolio risk management with buying power monitoring
+- Gamma Exposure (GEX) analysis with regime detection
+- Market snapshot for quick overnight checks
+- Discord-formatted output for sharing
+- Automated position monitoring with alerts
 
 ## Quick Start
 
 ### Prerequisites
 
-- Python 3.10+ (this repo includes a venv)
-- A tastytrade account (production or certification)
-- tastytrade API access
+- Python 3.10+
+- A Tastytrade account with API access
+- OAuth credentials (client secret + refresh token)
 
 ### Installation
 
 1. Clone this repository:
 ```bash
 git clone <repository-url>
-cd tastytrade-ivr-scanner
+cd tasty-coach
 ```
 
 2. Install dependencies:
@@ -35,7 +37,7 @@ pip install -r requirements.txt
 3. Set up your environment variables:
 ```bash
 cp .env.example .env
-# Edit .env with your tastytrade credentials
+# Edit .env with your Tastytrade OAuth credentials
 ```
 
 4. Test your connection:
@@ -45,12 +47,12 @@ cp .env.example .env
 
 ## Configuration
 
-Create a `.env` file in the project root with your tastytrade credentials:
+Create a `.env` file in the project root with your Tastytrade OAuth credentials:
 
 ```bash
-# Tastytrade Credentials
-TASTYTRADE_USERNAME=your_username
-TASTYTRADE_PASSWORD=your_password
+# Tastytrade OAuth Credentials
+TASTYTRADE_CLIENT_SECRET=your_client_secret
+TASTYTRADE_REFRESH_TOKEN=your_refresh_token
 TASTYTRADE_IS_TEST=false
 
 # Scanner Configuration
@@ -62,20 +64,21 @@ CACHE_DURATION=300
 MAX_RETRIES=3
 
 # Account Selection (recommended if you have multiple accounts)
-TASTY_ACCOUNT_NUMBER=5WW46136
+TASTY_ACCOUNT_NUMBER=your_account_number
 ```
 
 ### Configuration Options
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `TASTYTRADE_USERNAME` | Your tastytrade username | Required |
-| `TASTYTRADE_PASSWORD` | Your tastytrade password | Required |
-| `TASTYTRADE_IS_TEST` | Use certification environment | `false` |
-| `IVR_THRESHOLD` | IVR percentage threshold | `25` |
+| `TASTYTRADE_CLIENT_SECRET` | OAuth client secret | Required |
+| `TASTYTRADE_REFRESH_TOKEN` | OAuth refresh token | Required |
+| `TASTYTRADE_IS_TEST` | Use certification/sandbox environment | `false` |
+| `IVR_THRESHOLD` | IVR percentage threshold for scanning | `25` |
 | `LOG_LEVEL` | Logging level (DEBUG/INFO/WARNING/ERROR) | `INFO` |
 | `CACHE_DURATION` | Data cache duration in seconds | `300` |
 | `MAX_RETRIES` | Maximum API retry attempts | `3` |
+| `TASTY_ACCOUNT_NUMBER` | Specific account to use (multi-account) | Auto-select |
 
 ## Usage
 
@@ -84,148 +87,164 @@ TASTY_ACCOUNT_NUMBER=5WW46136
 ./venv/bin/python main.py --test-connection
 ```
 
-### List Watchlists Information
+### List Watchlists
 ```bash
 ./venv/bin/python main.py --list-watchlists
 ```
 
-### Get Watchlist Details
-```bash
-./venv/bin/python main.py --watchlist-info "Your Watchlist Name"
-```
-
-### Scan a Watchlist (Coming in Phase 3)
+### Scan a Watchlist for High IVR
 ```bash
 ./venv/bin/python main.py --watchlist "My Watchlist"
-```
 
-### Custom IVR Threshold
-```bash
+# With custom threshold
 ./venv/bin/python main.py --watchlist "High IV Plays" --threshold 30
 ```
 
-### View Account Report
-```bash
-./venv/bin/python main.py --report
-```
-
-![Account Report Example](docs/position_report.png)
-
 ### Market Snapshot
-Get a quick price snapshot for a specific list of symbols (e.g. overnight market check).
+Get a quick price snapshot from a watchlist named "Snapshot" in your Tastytrade platform.
 
-1. Create a watchlist named **"Snapshot"** in your tastytrade platform.
-2. Add your desired symbols (e.g. `/ES`, `/NQ`, `VIX`).
-   - The tool automatically resolves root symbols (like `/ES`) to the current active contract (e.g., `/ESH6`).
-3. Run the command:
 ```bash
 ./venv/bin/python main.py --snapshot
 ```
 
 ![Snapshot Example](docs/market_snapshot_example.png)
 
+### Check Market Status
+```bash
+./venv/bin/python main.py --market
+```
+
+### Account Report
+```bash
+./venv/bin/python main.py --report
+
+# Discord formatting
+./venv/bin/python main.py --report --discord
+```
+
+![Account Report Example](docs/position_report.png)
+
+### Portfolio Health Check
+```bash
+./venv/bin/python main.py --health
+```
+
+### Review Positions & Roll Scenarios
+```bash
+# Review positions for a specific underlying
+./venv/bin/python main.py --review-position SLV
+
+# Export to JSON
+./venv/bin/python main.py --review-position SLV --output slv_review.json
+
+# Discord formatting
+./venv/bin/python main.py --review-position SLV --discord
+```
+
+### Full Scan Workflow (Watchlist + Strategy Screening)
+```bash
+# Scan watchlist, check risk, screen strategies
+./venv/bin/python main.py --watchlist "My Watchlist"
+
+# Override risk manager blocks
+./venv/bin/python main.py --watchlist "My Watchlist" --force
+```
+
 ### Debug Mode
 ```bash
 ./venv/bin/python main.py --debug --watchlist "Test List"
 ```
 
+### Multi-Account
+```bash
+./venv/bin/python main.py --account 5WW46136 --report
+```
+
+## CLI Reference
+
+| Flag | Description |
+|------|-------------|
+| `--watchlist, -w NAME` | Scan a watchlist for high IVR symbols + screen strategies |
+| `--health` | Portfolio health check (risk metrics only) |
+| `--threshold, -t PCT` | Override IVR threshold (default: 25%) |
+| `--test-connection, -c` | Test API connectivity |
+| `--list-watchlists, -l` | List available watchlists |
+| `--market, -m` | Check market session status |
+| `--snapshot, -s` | Market snapshot from "Snapshot" watchlist |
+| `--report, -r` | Generate account positions report |
+| `--review-position SYMBOL` | Review position with roll scenarios |
+| `--output, -o FILE` | Export results to JSON file |
+| `--discord, -d` | Format output for Discord |
+| `--account NUMBER` | Select specific account |
+| `--force` | Override risk manager blocks |
+| `--debug, -D` | Enable debug logging |
+
+## Project Structure
+
+```
+tasty-coach/
+├── agents/
+│   ├── scanner.py          # IVR scanning & watchlist resolution
+│   ├── portfolio.py        # Position tracking & reporting
+│   ├── strategy.py         # Strategy screening (verticals, iron condors)
+│   ├── reviewer.py         # Position review & roll scenario analysis
+│   ├── manager.py          # Risk management & portfolio health
+│   └── gex.py             # Gamma Exposure (GEX) analysis
+├── utils/
+│   ├── tasty_client.py     # OAuth authentication & session management
+│   ├── roll_calculator.py  # Pure roll scenario calculations
+│   ├── market_schedule.py  # Market session & hours checking
+│   └── dx_feed.py         # Real-time data streaming (dxLink)
+├── tests/
+│   └── test_risk_manager.py
+├── docs/                   # Screenshots & images
+├── main.py                 # Entry point & CLI orchestrator
+├── position_monitor.py     # Automated position monitoring
+├── position_monitor.sh     # Bash wrapper for monitor
+├── requirements.txt
+├── .env                    # OAuth credentials (not committed)
+├── .env.example            # Credential template
+└── CLAUDE.md               # AI agent instructions
+```
+
 ## Project Status
 
-This project is currently in **Phase 5** development:
+Currently in **Phase 5** (Enhancement & Optimization):
 
-- ✅ **Phase 1**: Setup and Authentication (Complete)
-  - Project structure created
-  - Configuration management implemented
-  - tastytrade API authentication working
-  - Session management with remember tokens
-  - Connection testing functionality
-
-- ✅ **Phase 2**: Watchlist Integration (Complete)
-  - Watchlist retrieval by name (private and public)
-  - Symbol extraction and filtering
-  - Equity-only filtering capability
-  - Comprehensive error handling
-  - Multiple watchlist support
-  - Watchlist information and validation
-
-- ✅ **Phase 3**: Market Data & IVR Calculation (Complete)
-  - Fetch market data and option chains
-  - Implement IVR calculation algorithm
-  - Apply threshold filtering
-
-- ✅ **Phase 4**: Scanning Logic & Output (Complete)
-  - Complete end-to-end workflow
-  - Formatted output and reporting
-
-- ⏳ **Phase 5**: Enhancement & Optimization (Next)
-  - Additional features and optimizations
-
-## Development
-
-### Project Structure
-```
-tastytrade-ivr-scanner/
-├── src/
-│   ├── __init__.py
-│   ├── auth.py           # Authentication and session management
-│   ├── config.py         # Configuration management
-│   ├── watchlist.py      # Watchlist operations (coming soon)
-│   ├── market_data.py    # Market data and IVR calculations (coming soon)
-│   └── scanner.py        # Main scanning logic (coming soon)
-├── tests/                # Unit tests (coming soon)
-├── .env.example          # Environment variables template
-├── .agents               # Agent automation configuration
-├── PROJECT_PLAN.md       # Detailed project plan
-├── requirements.txt      # Python dependencies
-├── main.py              # Application entry point
-└── README.md
-```
-
-### Running Tests
-```bash
-python -m pytest tests/  # Coming in Phase 2
-```
-
-### Contributing
-
-This project uses agent-based development. See `.agents` file for agent roles and responsibilities.
-
-## Security
-
-- 🔒 Credentials are stored in environment variables
-- 🔑 Remember tokens used for session persistence
-- 📝 Sensitive data excluded from logs
-- ⚠️ Never commit `.env` file to version control
+- **Phase 1**: Setup & Authentication
+- **Phase 2**: Watchlist Integration
+- **Phase 3**: Market Data & IVR Calculation
+- **Phase 4**: Scanning Logic & Output
+- **Phase 5** (current): Position Reviewer, Risk Management, Strategy Screening, GEX Analysis
 
 ## Troubleshooting
 
 ### Authentication Issues
-1. Verify your credentials in the `.env` file
-2. Check if you're using the correct environment (test vs production)
-3. Ensure you have valid tastytrade credentials for the selected environment
-4. For test environment (`TASTYTRADE_IS_TEST=true`), you need certification/sandbox credentials
-5. For production environment (`TASTYTRADE_IS_TEST=false`), use your live trading credentials
-6. Run `./venv/bin/python main.py --test-connection` to diagnose issues
+1. Verify your OAuth credentials in `.env`
+2. Ensure `TASTYTRADE_CLIENT_SECRET` and `TASTYTRADE_REFRESH_TOKEN` are set
+3. For test environment, use certification/sandbox credentials
+4. Run `./venv/bin/python main.py --test-connection` to diagnose
 
 ### Common Errors
 - **"Required environment variable not set"**: Check your `.env` file
-- **"Authentication failed"**: Verify username/password
+- **"Authentication failed"**: Verify OAuth credentials
 - **"Connection test failed"**: Check network connectivity and API status
+- **414 Request-URI Too Large**: Market data requests are batched (~50 symbols); report if this persists
 
 ## API Rate Limits
 
 The application implements intelligent rate limiting:
 - Automatic retry with exponential backoff
 - Configurable maximum retry attempts
-- Data caching to reduce API calls
+- Data caching to reduce API calls (60s for market schedule, configurable for others)
+- Batched market data requests (~50 symbols per request)
+
+## Security
+
+- Credentials stored in environment variables (`.env`, never committed)
+- OAuth refresh tokens for session management
+- Sensitive data excluded from logs
 
 ## License
 
-This project is for educational and personal use. Please comply with tastytrade's Terms of Service and API usage guidelines.
-
-## Support
-
-For issues and questions:
-1. Check the troubleshooting section
-2. Review the logs in `tastytrade_scanner.log`
-3. Ensure you're using the latest version of dependencies# tasty-coach
+This project is for educational and personal use. Please comply with Tastytrade's Terms of Service and API usage guidelines.

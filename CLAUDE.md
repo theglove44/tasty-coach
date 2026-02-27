@@ -12,7 +12,7 @@
 - Keep main context clean for trading logic
 
 ### Self-Improvement Loop
-- After any mistake or bug: update `memory/projects/tasty-coach.md` with the pattern
+- After any mistake or bug: update `MEMORY.md` (auto-memory) with the pattern
 - Document what went wrong and how to prevent it
 - Review relevant lessons before major work
 
@@ -41,11 +41,10 @@
 
 ## Trading-Specific Rules
 
-- Always use paper_trades.csv for tracking
 - Never execute real trades without explicit user approval
 - Document strategy changes in memory
 - Review P/L after each session
-- Respect PDT rule (max 3 day trades per 5 days for sub-$5k accounts)
+- Respect PDT rule (max 3 day trades per 5 days for sub-$25k accounts)
 
 ## Key Files
 
@@ -53,10 +52,17 @@
 - `agents/scanner.py` — IVR scanning, watchlist resolution
 - `agents/portfolio.py` — Position tracking
 - `agents/reviewer.py` — Position review and roll suggestions
-- `paper_trades.csv` — Trade history
+- `agents/strategy.py` — Strategy screening and entry logic
+- `agents/manager.py` — Risk management (BP usage, position sizing)
+- `agents/gex.py` — Gamma exposure analysis
+- `utils/tasty_client.py` — OAuth authentication and session management
+- `utils/roll_calculator.py` — Roll scenario calculations
+- `utils/market_schedule.py` — Market session timing
+- `utils/dx_feed.py` — Real-time data streaming (dxLink)
+- `position_monitor.py` — Automated position monitoring and alerts
 
 ## Memory
 
-- Update `memory/projects/tasty-coach.md` with lessons learned
+- Update `MEMORY.md` (auto-memory, persists across conversations)
 - Document API quirks, rate limits, session issues
 - Track strategy performance metrics
