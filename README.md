@@ -122,7 +122,7 @@ Get a quick price snapshot for a specific list of symbols (e.g. overnight market
 ./venv/bin/python main.py --snapshot
 ```
 
-![Snapshot Example](docs/Screenshot 2026-02-27 at 09.29.23.png)
+![Snapshot Example](docs/market_snapshot_example.png)
 
 ### Debug Mode
 ```bash
