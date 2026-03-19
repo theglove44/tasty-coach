@@ -33,6 +33,8 @@ def setup_argument_parser() -> argparse.ArgumentParser:
         type=str,
         help="Account number to use (e.g. 5WW46136). Alternatively set TASTY_ACCOUNT_NUMBER in .env",
     )
+    parser.add_argument("--dashboard", action="store_true", help="Market Quality Dashboard (no account needed)")
+    parser.add_argument("--html", action="store_true", help="Open dashboard in browser (use with --dashboard)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
@@ -87,6 +89,10 @@ async def async_main() -> int:
         if not session:
             print("❌ Failed to establish session")
             return 1
+
+        if args.dashboard:
+            from agents.dashboard import run_dashboard
+            return await run_dashboard(session, html=args.html)
 
         account_number: Optional[str] = args.account or client.config.account_number
 
