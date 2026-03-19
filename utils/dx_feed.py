@@ -33,10 +33,10 @@ class DXFeed:
                 while symbols_to_find and (time.time() - start_time) < timeout:
                     try:
                         greeks_event = await asyncio.wait_for(streamer.get_event(Greeks), timeout=2.0)
-                        if greeks_event and greeks_event.symbol in symbols_to_find:
+                        if greeks_event and greeks_event.event_symbol in symbols_to_find:
                             if greeks_event.volatility is not None:
-                                iv_results[greeks_event.symbol] = float(greeks_event.volatility)
-                                symbols_to_find.remove(greeks_event.symbol)
+                                iv_results[greeks_event.event_symbol] = float(greeks_event.volatility)
+                                symbols_to_find.remove(greeks_event.event_symbol)
                     except asyncio.TimeoutError:
                         break
                     except Exception as e:

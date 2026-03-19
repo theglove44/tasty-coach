@@ -154,10 +154,10 @@ async def async_main() -> int:
             from tastytrade.watchlists import PrivateWatchlist, PublicWatchlist
 
             print("\nPrivate Watchlists:")
-            for w in await PrivateWatchlist.get(session):
+            for w in PrivateWatchlist.get(session):
                 print(f"  • {w.name}")
             print("\nPublic Watchlists:")
-            for w in await PublicWatchlist.get(session):
+            for w in PublicWatchlist.get(session):
                 print(f"  • {w.name}")
             return 0
 

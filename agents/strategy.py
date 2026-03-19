@@ -1,7 +1,7 @@
 import logging
 import asyncio
-from typing import List, Dict, Optional, Tuple, Any
-from datetime import datetime, date, timedelta
+from typing import List, Dict, Optional, Any
+from datetime import datetime, date
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -67,9 +67,9 @@ class StrategyAgent:
         try:
             async with DXLinkStreamer(self.session) as streamer:
                 await streamer.subscribe(Greeks, streamer_symbols)
-                start_time = asyncio.get_event_loop().time()
+                start_time = asyncio.get_running_loop().time()
                 while len(greeks_map) < len(streamer_symbols):
-                    if asyncio.get_event_loop().time() - start_time > timeout:
+                    if asyncio.get_running_loop().time() - start_time > timeout:
                         self.logger.warning(f"Timeout reached while fetching greeks. Got {len(greeks_map)}/{len(streamer_symbols)}")
                         break
                     
@@ -80,7 +80,7 @@ class StrategyAgent:
                         if len(greeks_map) >= len(streamer_symbols):
                             break
                         
-                        if asyncio.get_event_loop().time() - start_time > timeout:
+                        if asyncio.get_running_loop().time() - start_time > timeout:
                             break
         except Exception as e:
             self.logger.error(f"Error in streamer: {e}")
@@ -113,7 +113,7 @@ class StrategyAgent:
 
         self.logger.info(f"Screening strategies for {symbol} (IVR: {current_ivr}%)...")
         try:
-            chains = await NestedOptionChain.get(self.session, symbol)
+            chains = NestedOptionChain.get(self.session, symbol)
             if not chains: return []
             chain = chains[0]
             target_exp = self._get_target_expiration(chain)
@@ -122,7 +122,7 @@ class StrategyAgent:
                 return []
             
             from tastytrade.instruments import get_option_chain
-            full_chain = await get_option_chain(self.session, symbol)
+            full_chain = get_option_chain(self.session, symbol)
             expiry_str = target_exp.expiration_date.strftime('%Y-%m-%d')
             options = full_chain.get(target_exp.expiration_date)
             if not options:
@@ -174,7 +174,7 @@ class StrategyAgent:
                     self.logger.debug(f"No {target_width} width strike for {symbol} {readable_type}")
                     continue
                     
-                prices = await get_market_data_by_type(self.session, options=[best_short.symbol, best_long.symbol])
+                prices = get_market_data_by_type(self.session, options=[best_short.symbol, best_long.symbol])
                 if len(prices) < 2: continue
                 
                 short_mark = float(next(p for p in prices if p.symbol == best_short.symbol).mark)
@@ -216,12 +216,14 @@ class StrategyAgent:
             put_v = next((t for t in targets if "Put" in t.strategy_type), None)
             call_v = next((t for t in targets if "Call" in t.strategy_type), None)
             if put_v and call_v:
+                # IC max loss = wider side width - total credit
+                ic_width = max(put_v.width, call_v.width)
                 targets.append(StrategyTarget(
                     symbol=symbol,
                     strategy_type="Iron Condor",
                     expiration=target_exp.expiration_date,
                     dte=put_v.dte,
-                    width=put_v.width,
+                    width=ic_width,
                     expected_credit=put_v.expected_credit + call_v.expected_credit,
                     legs=put_v.legs + call_v.legs,
                     ivr=current_ivr
@@ -285,18 +287,36 @@ class StrategyAgent:
         """Check for 50% profit target or 21 DTE time stop."""
         to_close = []
         today = date.today()
-        for pos in positions:
-            if not pos.instrument_type or 'Option' not in pos.instrument_type.value:
-                continue
+
+        # Fetch current marks for option positions via market data API
+        option_positions = [
+            pos for pos in positions
+            if getattr(pos, 'instrument_type', None)
+            and 'Option' in pos.instrument_type.value
+        ]
+        marks_map = {}
+        if option_positions:
+            option_symbols = [pos.symbol for pos in option_positions]
+            try:
+                batch_size = 50
+                for i in range(0, len(option_symbols), batch_size):
+                    batch = option_symbols[i:i + batch_size]
+                    quotes = get_market_data_by_type(self.session, options=batch)
+                    for q in quotes:
+                        marks_map[q.symbol] = float(q.mark) if q.mark else 0.0
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch marks for position management: {e}")
+
+        for pos in option_positions:
             if getattr(pos, "expires_at", None):
                 dte = (pos.expires_at.date() - today).days
                 if dte <= 21:
                     to_close.append({'position': pos, 'reason': f'Time Stop ({dte} DTE)'})
                     continue
-            is_short = pos.quantity < 0
+            is_short = getattr(pos, 'quantity_direction', 'Long') == 'Short'
             open_price = float(pos.average_open_price or 0)
-            current_mark = float(pos.mark or 0) if hasattr(pos, 'mark') else 0.0
-            if is_short and open_price > 0:
+            current_mark = marks_map.get(pos.symbol, 0.0)
+            if is_short and open_price > 0 and current_mark > 0:
                 profit_pct = (open_price - current_mark) / open_price
                 if profit_pct >= 0.50:
                     to_close.append({'position': pos, 'reason': f'Profit Target ({profit_pct:.1%})'})

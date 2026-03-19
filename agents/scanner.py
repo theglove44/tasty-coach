@@ -3,7 +3,7 @@ Watchlist & IVR Filtering Agent.
 """
 
 import logging
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Optional
 from datetime import datetime
 from decimal import Decimal
 from dataclasses import dataclass
@@ -52,12 +52,12 @@ class ScannerAgent:
     async def get_symbols_from_watchlist(self, watchlist_name: str, equity_only: bool = True) -> List[str]:
         """Extract symbols from a private or public watchlist."""
         # Try private first
-        watchlists = await PrivateWatchlist.get(self.session)
+        watchlists = PrivateWatchlist.get(self.session)
         target = next((w for w in watchlists if w.name == watchlist_name), None)
         
         if not target:
             # Try public
-            watchlists = await PublicWatchlist.get(self.session)
+            watchlists = PublicWatchlist.get(self.session)
             target = next((w for w in watchlists if w.name == watchlist_name), None)
             
         if not target:
@@ -77,8 +77,10 @@ class ScannerAgent:
 
     async def get_market_snapshot(self, symbols: List[str]) -> List[SnapshotData]:
         """Fetch market snapshot (price, change) for symbols."""
+        # Per API docs, futures always start with / followed by product code
+        # (e.g. /ES, /CL, /NQ). Equities can contain / (e.g. BRK/A) but
+        # never start with /. So startswith('/') is correct for classification.
         futures = [s for s in symbols if s.startswith('/')]
-        # Treat everything else as equity/index for now
         equities = [s for s in symbols if not s.startswith('/')]
         
         snapshot_data = []
@@ -100,7 +102,7 @@ class ScannerAgent:
                     # This is more reliable than option chains which return root symbols
                     try:
                         from tastytrade.instruments import Future
-                        futures_list = await Future.get(self.session, product_codes=[product_code])
+                        futures_list = Future.get(self.session, product_codes=[product_code])
                         # Get front-month (earliest expiration that's active)
                         active_futures = sorted(
                             [fut for fut in futures_list if fut.active],
@@ -115,7 +117,7 @@ class ScannerAgent:
                     if not found:
                         # Fallback: try future option chain
                         try:
-                            chain = await get_future_option_chain(self.session, product_code)
+                            chain = get_future_option_chain(self.session, product_code)
                             if chain:
                                 first_exp = list(chain.keys())[0]
                                 strike = chain[first_exp][0]
@@ -128,7 +130,7 @@ class ScannerAgent:
                     if not found:
                         # Fallback: try regular option chain
                         try:
-                            chain = await get_option_chain(self.session, f)
+                            chain = get_option_chain(self.session, f)
                             if chain:
                                 first_exp = list(chain.keys())[0]
                                 strike = chain[first_exp][0]
@@ -142,7 +144,7 @@ class ScannerAgent:
                          # Final fallback to original (may fail)
                          resolved_futures.append(f)
 
-                data = await get_market_data_by_type(self.session, futures=resolved_futures)
+                data = get_market_data_by_type(self.session, futures=resolved_futures)
                 
                 for d in data:
                     last = float(d.last) if d.last else 0.0
@@ -161,7 +163,7 @@ class ScannerAgent:
             
             # Fetch Equities/Indices
             if equities:
-                data = await get_market_data_by_type(self.session, equities=equities)
+                data = get_market_data_by_type(self.session, equities=equities)
                 for d in data:
                     last = float(d.last) if d.last else 0.0
                     prev = float(d.prev_close) if d.prev_close else 0.0
@@ -192,9 +194,9 @@ class ScannerAgent:
             
             # Fetch Metrics
             try:
-                metrics_list = await get_market_metrics(self.session, batch)
+                metrics_list = get_market_metrics(self.session, batch)
                 metrics = {m.symbol: m for m in metrics_list}
-                prices_list = await get_market_data_by_type(self.session, equities=batch)
+                prices_list = get_market_data_by_type(self.session, equities=batch)
                 prices = {d.symbol: d for d in prices_list}
                 
                 for symbol in batch:

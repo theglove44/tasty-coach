@@ -22,7 +22,7 @@ class PortfolioAgent:
 
     async def _get_account(self) -> Optional[Account]:
         try:
-            accounts = await Account.get(self.session)
+            accounts = Account.get(self.session)
             if not accounts:
                 return None
 
@@ -45,7 +45,7 @@ class PortfolioAgent:
         if not self.account:
             return {}
         try:
-            balances = await self.account.get_balances(self.session)
+            balances = self.account.get_balances(self.session)
             return {
                 "net_liquidating_value": float(balances.net_liquidating_value),
                 "equity_buying_power": float(balances.equity_buying_power),
@@ -66,7 +66,7 @@ class PortfolioAgent:
         if not self.account:
             return []
         try:
-            return await self.account.get_positions(self.session)
+            return self.account.get_positions(self.session)
         except Exception as e:
             self.logger.error(f"Error fetching positions: {e}")
             return []
@@ -77,7 +77,8 @@ class PortfolioAgent:
         """
         import re
         # Regex for OCC symbol
-        match = re.match(r'^([A-Z]+)\s+(\d{6})([CP])(\d{8})$', symbol)
+        # OCC format: ROOT YYMMDDTSSSSSSSS — root may contain / (e.g. BRK/A)
+        match = re.match(r'^([A-Z/]+)\s+(\d{6})([CP])(\d{8})$', symbol)
         if not match:
             return {}
         
@@ -193,11 +194,33 @@ class PortfolioAgent:
             return
 
         # Fetch market data for all positions for accurate P/L
-        symbols = [p.symbol for p in positions]
+        # Per API docs, GET /market-data/by-type requires typed params:
+        # equity, equity-option, future, future-option, cryptocurrency
+        equity_symbols = []
+        option_symbols = []
+        future_symbols = []
+        for p in positions:
+            type_str = getattr(getattr(p, 'instrument_type', None), 'value', '')
+            if type_str == 'Equity':
+                equity_symbols.append(p.symbol)
+            elif type_str == 'Equity Option':
+                option_symbols.append(p.symbol)
+            elif type_str in ('Future', 'Future Option'):
+                future_symbols.append(p.symbol)
+
         quotes_map = {}
+        batch_size = 50
         try:
-            quotes = await get_market_data_by_type(self.session, symbols)
-            quotes_map = {q.symbol: q for q in quotes}
+            if equity_symbols:
+                eq_quotes = get_market_data_by_type(self.session, equities=equity_symbols)
+                quotes_map.update({q.symbol: q for q in eq_quotes})
+            for i in range(0, len(option_symbols), batch_size):
+                batch = option_symbols[i:i + batch_size]
+                opt_quotes = get_market_data_by_type(self.session, options=batch)
+                quotes_map.update({q.symbol: q for q in opt_quotes})
+            if future_symbols:
+                fut_quotes = get_market_data_by_type(self.session, futures=future_symbols)
+                quotes_map.update({q.symbol: q for q in fut_quotes})
         except Exception as e:
             self.logger.warning(f"Failed to fetch market data: {e}. P/L may be inaccurate.")
 
@@ -229,9 +252,9 @@ class PortfolioAgent:
                     if pos.symbol in quotes_map:
                         mark = float(quotes_map[pos.symbol].mark)
                     else:
-                         mv = float(getattr(pos, 'market_value', 0))
-                         if qty != 0:
-                             mark = abs(mv / (qty * multiplier))
+                        # Per API docs, positions have close-price (prev market close)
+                        # but no mark field. Use close_price as fallback.
+                        mark = float(getattr(pos, 'close_price', 0) or 0)
                     
                     strat_entry_cost += (qty * avg_open_price * multiplier)
                     strat_pl_open += (mark - avg_open_price) * qty * multiplier
@@ -274,9 +297,9 @@ class PortfolioAgent:
                     if pos.symbol in quotes_map:
                         mark = float(quotes_map[pos.symbol].mark)
                     else:
-                         mv = float(getattr(pos, 'market_value', 0))
-                         if qty != 0:
-                             mark = abs(mv / (qty * multiplier))
+                        # Per API docs, positions have close-price (prev market close)
+                        # but no mark field. Use close_price as fallback.
+                        mark = float(getattr(pos, 'close_price', 0) or 0)
 
                     market_value = mark * qty * multiplier
                     pl_open = (mark - avg_open_price) * qty * multiplier

@@ -15,7 +15,7 @@ from decimal import Decimal
 import pandas as pd
 from tastytrade import Session, DXLinkStreamer
 from tastytrade.dxfeed import Greeks, Quote, Summary, Trade
-from tastytrade.instruments import Option, get_option_chain
+from tastytrade.instruments import Option, OptionType, get_option_chain
 from tastytrade.market_data import get_market_data_by_type
 
 # Constants
@@ -260,7 +260,7 @@ class GEXAgent:
             for i in range(0, len(all_symbols), 100):
                 chunk = all_symbols[i:i + 100]
                 try:
-                    market_data = await get_market_data_by_type(self.session, options=chunk)
+                    market_data = get_market_data_by_type(self.session, options=chunk)
                     for md in market_data:
                         entry = {}
                         if md.open_interest is not None:
@@ -314,7 +314,7 @@ class GEXAgent:
                 strike = float(opt.strike_price)
                 raw_gex_m = (oi * gamma * 100 * (spot ** 2) * 0.01) / 1_000_000
 
-                is_call = opt.option_type == 'C'
+                is_call = opt.option_type == OptionType.CALL
                 net_gex = raw_gex_m if is_call else -raw_gex_m
 
                 data.append({

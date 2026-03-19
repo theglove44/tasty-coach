@@ -5,6 +5,7 @@ This module provides pure calculation logic for analyzing options position roll 
 separated from API concerns. Supports vertical spreads, single legs, and other common strategies.
 """
 
+import copy
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -327,16 +328,16 @@ def calculate_roll_down_scenario(
     """
     scenarios = []
 
-    current_legs = current_position.get('legs', [])
+    current_legs_orig = current_position.get('legs', [])
     current_expiration = current_position.get('expiration')
     current_dte = current_position.get('dte', 0)
 
-    if len(current_legs) < 1:
+    if len(current_legs_orig) < 1:
         return scenarios
 
     # Extract current strikes and option type
-    current_strikes = [extract_decimal(leg.get('strike', 0)) for leg in current_legs]
-    option_type = current_legs[0].get('option_type', '').upper()
+    current_strikes = [extract_decimal(leg.get('strike', 0)) for leg in current_legs_orig]
+    option_type = current_legs_orig[0].get('option_type', '').upper()
 
     # Determine direction based on option type
     # For puts: roll down = lower strikes
@@ -344,7 +345,7 @@ def calculate_roll_down_scenario(
     is_put = option_type in ['PUT', 'P']
 
     # Calculate current metrics
-    current_metrics = calculate_spread_metrics(current_legs)
+    current_metrics = calculate_spread_metrics(current_legs_orig)
 
     for target_short_strike in target_strikes:
         # Skip if not a valid roll down
@@ -352,6 +353,9 @@ def calculate_roll_down_scenario(
             continue
         if not is_put and target_short_strike <= max(current_strikes):
             continue
+
+        # Deep copy to avoid mutating shared data across iterations
+        current_legs = copy.deepcopy(current_legs_orig)
 
         # Build new legs with target strikes
         new_legs = []
@@ -484,15 +488,15 @@ def calculate_roll_out_scenario(
     """
     scenarios = []
 
-    current_legs = current_position.get('legs', [])
+    current_legs_orig = current_position.get('legs', [])
     current_expiration = current_position.get('expiration')
     current_dte = current_position.get('dte', 0)
 
-    if len(current_legs) < 1:
+    if len(current_legs_orig) < 1:
         return scenarios
 
     # Calculate current metrics
-    current_metrics = calculate_spread_metrics(current_legs)
+    current_metrics = calculate_spread_metrics(current_legs_orig)
 
     for target_exp_date in target_expirations:
         if target_exp_date <= current_expiration:
@@ -506,6 +510,9 @@ def calculate_roll_out_scenario(
         target_chain = new_chain_data.get(target_exp_date, {})
         if not target_chain:
             continue
+
+        # Deep copy to avoid mutating shared data across iterations
+        current_legs = copy.deepcopy(current_legs_orig)
 
         # Build new legs with same strikes, new expiration
         new_legs = []
@@ -624,20 +631,20 @@ def calculate_roll_down_and_out_scenario(
     """
     scenarios = []
 
-    current_legs = current_position.get('legs', [])
+    current_legs_orig = current_position.get('legs', [])
     current_expiration = current_position.get('expiration')
     current_dte = current_position.get('dte', 0)
 
-    if len(current_legs) < 1:
+    if len(current_legs_orig) < 1:
         return scenarios
 
     # Extract current info
-    current_strikes = [extract_decimal(leg.get('strike', 0)) for leg in current_legs]
-    option_type = current_legs[0].get('option_type', '').upper()
+    current_strikes = [extract_decimal(leg.get('strike', 0)) for leg in current_legs_orig]
+    option_type = current_legs_orig[0].get('option_type', '').upper()
     is_put = option_type in ['PUT', 'P']
 
     # Calculate current metrics
-    current_metrics = calculate_spread_metrics(current_legs)
+    current_metrics = calculate_spread_metrics(current_legs_orig)
 
     # Limit combinations to avoid explosion
     max_scenarios = 10
@@ -662,6 +669,9 @@ def calculate_roll_down_and_out_scenario(
                 continue
             if not is_put and target_short_strike <= max(current_strikes):
                 continue
+
+            # Deep copy to avoid mutating shared data across iterations
+            current_legs = copy.deepcopy(current_legs_orig)
 
             # Build new legs
             new_legs = []
