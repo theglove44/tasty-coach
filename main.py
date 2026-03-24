@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from utils.tasty_client import TastyClient
+from utils import redact
 from agents.scanner import ScannerAgent
 from agents.portfolio import PortfolioAgent
 from agents.strategy import StrategyAgent
@@ -36,6 +37,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard", action="store_true", help="Market Quality Dashboard (no account needed)")
     parser.add_argument("--html", action="store_true", help="Open dashboard in browser (use with --dashboard)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
+    parser.add_argument("--redact", action="store_true", help="Mask account numbers and dollar amounts for screenshots")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
 
@@ -54,6 +56,9 @@ async def async_main() -> int:
     parser = setup_argument_parser()
     args = parser.parse_args()
 
+    if args.redact:
+        redact.enable()
+
     client = TastyClient()
 
     if args.debug:
@@ -71,7 +76,7 @@ async def async_main() -> int:
                 accounts = await client.get_accounts()
                 print(f"✅ Found {len(accounts)} accounts")
                 for a in accounts:
-                    acct_num = getattr(a, "account_number", "?")
+                    acct_num = redact.account(getattr(a, "account_number", "?"))
                     nickname = getattr(a, "nickname", "") or ""
                     extra = f" ({nickname})" if nickname else ""
                     print(f"  • {acct_num}{extra}")
@@ -101,7 +106,7 @@ async def async_main() -> int:
         if len(accounts) > 1 and not account_number:
             print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
             for a in accounts:
-                acct_num = getattr(a, "account_number", "?")
+                acct_num = redact.account(getattr(a, "account_number", "?"))
                 nickname = getattr(a, "nickname", "") or ""
                 extra = f" ({nickname})" if nickname else ""
                 print(f"  • {acct_num}{extra}")
@@ -160,10 +165,10 @@ async def async_main() -> int:
             from tastytrade.watchlists import PrivateWatchlist, PublicWatchlist
 
             print("\nPrivate Watchlists:")
-            for w in PrivateWatchlist.get(session):
+            for w in await PrivateWatchlist.get(session):
                 print(f"  • {w.name}")
             print("\nPublic Watchlists:")
-            for w in PublicWatchlist.get(session):
+            for w in await PublicWatchlist.get(session):
                 print(f"  • {w.name}")
             return 0
 
@@ -173,13 +178,13 @@ async def async_main() -> int:
 
             risk_report = await risk_manager.calculate_portfolio_risk()
 
-            print(f"💰 NLV: ${risk_report['nlv']:,.2f}")
+            print(f"💰 NLV: ${redact.dollars(risk_report['nlv'])}")
             print(
                 f"📊 BP Usage: {risk_report['bp_usage_pct']:.2f}% [{risk_report['bp_usage_status']}]"
             )
-            print(f"💵 Cash: ${risk_report['cash_balance']:,.2f} | Day Trade BP: ${risk_report['day_trading_buying_power']:,.2f}")
+            print(f"💵 Cash: ${redact.dollars(risk_report['cash_balance'])} | Day Trade BP: ${redact.dollars(risk_report['day_trading_buying_power'])}")
             if risk_report.get('day_trade_excess') is not None:
-                print(f"📉 Day Trade Excess: ${risk_report['day_trade_excess']:,.2f}")
+                print(f"📉 Day Trade Excess: ${redact.dollars(risk_report['day_trade_excess'])}")
 
             print(
                 f"⚖️  Portfolio Delta: {risk_report['portfolio_delta']:.2f} | Theta: {risk_report['portfolio_theta']:.2f} [{risk_report['theta_status']}]"

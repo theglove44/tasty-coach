@@ -5,6 +5,8 @@ from datetime import datetime, date
 from tastytrade import Session, Account
 from tastytrade.market_data import get_market_data_by_type
 
+from utils import redact
+
 
 class PortfolioAgent:
     """Handles account status + positions for a specific account."""
@@ -22,7 +24,7 @@ class PortfolioAgent:
 
     async def _get_account(self) -> Optional[Account]:
         try:
-            accounts = Account.get(self.session)
+            accounts = await Account.get(self.session)
             if not accounts:
                 return None
 
@@ -45,7 +47,7 @@ class PortfolioAgent:
         if not self.account:
             return {}
         try:
-            balances = self.account.get_balances(self.session)
+            balances = await self.account.get_balances(self.session)
             return {
                 "net_liquidating_value": float(balances.net_liquidating_value),
                 "equity_buying_power": float(balances.equity_buying_power),
@@ -66,7 +68,7 @@ class PortfolioAgent:
         if not self.account:
             return []
         try:
-            return self.account.get_positions(self.session)
+            return await self.account.get_positions(self.session)
         except Exception as e:
             self.logger.error(f"Error fetching positions: {e}")
             return []
@@ -181,10 +183,10 @@ class PortfolioAgent:
         open_block = "```" if discord else ""
         close_block = "```" if discord else ""
 
-        print(f"{open_block}ACCOUNT SUMMARY ({self.account_number})")
-        print(f"Net Liq:       ${status.get('net_liquidating_value', 0):,.2f}")
-        print(f"Equity BP:     ${status.get('equity_buying_power', 0):,.2f}")
-        print(f"Cash Balance:  ${status.get('cash_balance', 0):,.2f}{close_block}")
+        print(f"{open_block}ACCOUNT SUMMARY ({redact.account(self.account_number)})")
+        print(f"Net Liq:       ${redact.dollars(status.get('net_liquidating_value', 0))}")
+        print(f"Equity BP:     ${redact.dollars(status.get('equity_buying_power', 0))}")
+        print(f"Cash Balance:  ${redact.dollars(status.get('cash_balance', 0))}{close_block}")
         
         # 2. Positions Table
         positions = await self.get_positions()
@@ -212,14 +214,14 @@ class PortfolioAgent:
         batch_size = 50
         try:
             if equity_symbols:
-                eq_quotes = get_market_data_by_type(self.session, equities=equity_symbols)
+                eq_quotes = await get_market_data_by_type(self.session, equities=equity_symbols)
                 quotes_map.update({q.symbol: q for q in eq_quotes})
             for i in range(0, len(option_symbols), batch_size):
                 batch = option_symbols[i:i + batch_size]
-                opt_quotes = get_market_data_by_type(self.session, options=batch)
+                opt_quotes = await get_market_data_by_type(self.session, options=batch)
                 quotes_map.update({q.symbol: q for q in opt_quotes})
             if future_symbols:
-                fut_quotes = get_market_data_by_type(self.session, futures=future_symbols)
+                fut_quotes = await get_market_data_by_type(self.session, futures=future_symbols)
                 quotes_map.update({q.symbol: q for q in fut_quotes})
         except Exception as e:
             self.logger.warning(f"Failed to fetch market data: {e}. P/L may be inaccurate.")
@@ -266,7 +268,7 @@ class PortfolioAgent:
                 prefix = f"    └── {strat['name']}"
                 padding = " " * max(3, 88 - len(prefix))
                 
-                print(f"{prefix}{padding}{strat_pl_open:>10.2f} | {strat_pl_pct:>6.1%}")
+                print(f"{prefix}{padding}{redact.dollars(strat_pl_open, '>10.2f')} | {strat_pl_pct:>6.1%}")
 
                 for pos in strat['legs']:
                     qty = int(getattr(pos, 'quantity', 0))
@@ -311,5 +313,5 @@ class PortfolioAgent:
                         else:
                             pl_pct = (avg_open_price - mark) / avg_open_price
 
-                    print(f"{qty:>5} |   {display_name:<20} | {exp_str:<8} | {dte_str:>4} | ${avg_open_price:>8.2f} | ${mark:>8.2f} | ${market_value:>9.2f} | ${pl_open:>9.2f} | {pl_pct:>6.1%}")
+                    print(f"{qty:>5} |   {display_name:<20} | {exp_str:<8} | {dte_str:>4} | ${redact.dollars(avg_open_price, '>8.2f')} | ${mark:>8.2f} | ${redact.dollars(market_value, '>9.2f')} | ${redact.dollars(pl_open, '>9.2f')} | {pl_pct:>6.1%}")
             print(close_block)

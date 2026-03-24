@@ -28,7 +28,7 @@ class RiskManager:
         if self.account:
             return self.account
 
-        accounts = Account.get(self.session)
+        accounts = await Account.get(self.session)
         if not accounts:
             raise ValueError("No accounts found.")
 
@@ -73,12 +73,12 @@ class RiskManager:
         batch_size = 50
         try:
             if equity_syms:
-                quotes = get_market_data_by_type(self.session, equities=equity_syms)
+                quotes = await get_market_data_by_type(self.session, equities=equity_syms)
                 for q in quotes:
                     marks[q.symbol] = float(q.mark) if q.mark else 0.0
             for i in range(0, len(option_syms), batch_size):
                 batch = option_syms[i:i + batch_size]
-                quotes = get_market_data_by_type(self.session, options=batch)
+                quotes = await get_market_data_by_type(self.session, options=batch)
                 for q in quotes:
                     marks[q.symbol] = float(q.mark) if q.mark else 0.0
         except Exception as e:
@@ -88,8 +88,8 @@ class RiskManager:
 
     async def calculate_portfolio_risk(self) -> Dict[str, Any]:
         account = await self._get_account()
-        balances = account.get_balances(self.session)
-        positions = account.get_positions(self.session)
+        balances = await account.get_balances(self.session)
+        positions = await account.get_positions(self.session)
 
         nlv = extract_decimal(getattr(balances, "net_liquidating_value", None))
         bp = extract_decimal(getattr(balances, "equity_buying_power", None))
@@ -213,7 +213,7 @@ class RiskManager:
 
         for underlying, occ_symbols in by_underlying.items():
             try:
-                chain = get_option_chain(self.session, underlying)
+                chain = await get_option_chain(self.session, underlying)
                 # chain is dict[date, list[Option]]
                 for exp_date, options in chain.items():
                     for opt in options:

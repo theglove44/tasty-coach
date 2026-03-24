@@ -23,6 +23,7 @@ from rich.table import Table
 from rich import box
 
 from agents.portfolio import PortfolioAgent
+from utils import redact
 from utils.roll_calculator import (
     RollScenario,
     calculate_roll_down_scenario,
@@ -220,7 +221,7 @@ class ReviewerAgent:
             symbols = [p.symbol for p in position_legs]
             quotes_map = {}
             try:
-                quotes = get_market_data_by_type(self.session, options=symbols)
+                quotes = await get_market_data_by_type(self.session, options=symbols)
                 quotes_map = {q.symbol: q for q in quotes}
             except Exception as e:
                 self.logger.warning(f"Failed to fetch market data: {e}")
@@ -282,7 +283,7 @@ class ReviewerAgent:
             # Fetch underlying price
             underlying_price = 0.0
             try:
-                underlying_quotes = get_market_data_by_type(
+                underlying_quotes = await get_market_data_by_type(
                     self.session,
                     equities=[underlying]
                 )
@@ -328,7 +329,7 @@ class ReviewerAgent:
         """
         try:
             # Get nested chain for expiration list
-            chains = NestedOptionChain.get(self.session, underlying)
+            chains = await NestedOptionChain.get(self.session, underlying)
             if not chains:
                 return {}
 
@@ -364,7 +365,7 @@ class ReviewerAgent:
                 return {}
 
             # Fetch full option chain
-            full_chain = get_option_chain(self.session, underlying)
+            full_chain = await get_option_chain(self.session, underlying)
 
             # Organize chain data
             chain_data = {
@@ -538,7 +539,7 @@ class ReviewerAgent:
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i:i + batch_size]
                 try:
-                    quotes = get_market_data_by_type(self.session, options=batch)
+                    quotes = await get_market_data_by_type(self.session, options=batch)
                     for q in quotes:
                         quotes_map[q.symbol] = q
                 except Exception as e:
@@ -606,9 +607,9 @@ class ReviewerAgent:
             summary_table.add_row("Underlying Price", f"${pos.current_price:.2f}")
             summary_table.add_row("Expiration", pos.expiration.strftime('%Y-%m-%d'))
             summary_table.add_row("DTE", str(pos.dte))
-            summary_table.add_row("Entry Cost", f"${pos.entry_cost:.2f}")
-            summary_table.add_row("Current Value", f"${pos.current_value:.2f}")
-            summary_table.add_row("Unrealized P/L", f"${pos.unrealized_pl:.2f}")
+            summary_table.add_row("Entry Cost", f"${redact.dollars(pos.entry_cost)}")
+            summary_table.add_row("Current Value", f"${redact.dollars(pos.current_value)}")
+            summary_table.add_row("Unrealized P/L", f"${redact.dollars(pos.unrealized_pl)}")
 
             if abs(pos.entry_cost) > 0:
                 pl_pct = (pos.unrealized_pl / abs(pos.entry_cost)) * 100
@@ -631,9 +632,9 @@ class ReviewerAgent:
                 strike_str = f"${leg['strike']:.1f}"
                 type_str = leg['option_type']
                 qty_str = str(leg['quantity'])
-                avg_str = f"${leg['avg_open_price']:.2f}"
+                avg_str = f"${redact.dollars(leg['avg_open_price'])}"
                 mark_str = f"${leg['mark']:.2f}"
-                pl_str = f"${leg['unrealized_pl']:.2f}"
+                pl_str = f"${redact.dollars(leg['unrealized_pl'])}"
 
                 legs_table.add_row(action_str, strike_str, type_str, qty_str, avg_str, mark_str, pl_str)
 
@@ -663,13 +664,13 @@ class ReviewerAgent:
 
                     # Credit/Debit with color
                     if scenario.credit_debit >= 0:
-                        cd_str = f"${scenario.credit_debit:.2f} CR"
+                        cd_str = f"${redact.dollars(scenario.credit_debit)} CR"
                         cd_style = "bold green"
                     else:
-                        cd_str = f"${abs(scenario.credit_debit):.2f} DB"
+                        cd_str = f"${redact.dollars(abs(scenario.credit_debit))} DB"
                         cd_style = "bold red"
 
-                    be_str = f"${scenario.new_breakeven:.2f}" if scenario.new_breakeven else "-"
+                    be_str = f"${redact.dollars(scenario.new_breakeven)}" if scenario.new_breakeven else "-"
                     days_str = f"+{scenario.days_added}" if scenario.days_added > 0 else "0"
                     score_str = f"{scenario.viability_score:.1f}"
 
@@ -713,17 +714,30 @@ class ReviewerAgent:
                 pos = result.position
 
                 # Serialize position
-                pos_dict = {
-                    "underlying": pos.underlying,
-                    "current_price": pos.current_price,
-                    "strategy_type": pos.strategy_type,
-                    "expiration": pos.expiration.isoformat(),
-                    "dte": pos.dte,
-                    "entry_cost": pos.entry_cost,
-                    "current_value": pos.current_value,
-                    "unrealized_pl": pos.unrealized_pl,
-                    "legs": pos.legs
-                }
+                if redact.is_enabled():
+                    pos_dict = {
+                        "underlying": pos.underlying,
+                        "current_price": pos.current_price,
+                        "strategy_type": pos.strategy_type,
+                        "expiration": pos.expiration.isoformat(),
+                        "dte": pos.dte,
+                        "entry_cost": redact.dollars(pos.entry_cost),
+                        "current_value": redact.dollars(pos.current_value),
+                        "unrealized_pl": redact.dollars(pos.unrealized_pl),
+                        "legs": pos.legs
+                    }
+                else:
+                    pos_dict = {
+                        "underlying": pos.underlying,
+                        "current_price": pos.current_price,
+                        "strategy_type": pos.strategy_type,
+                        "expiration": pos.expiration.isoformat(),
+                        "dte": pos.dte,
+                        "entry_cost": pos.entry_cost,
+                        "current_value": pos.current_value,
+                        "unrealized_pl": pos.unrealized_pl,
+                        "legs": pos.legs
+                    }
                 output["positions"].append(pos_dict)
 
                 # Underlying prices
@@ -737,17 +751,30 @@ class ReviewerAgent:
                 }
 
                 for scenario in result.roll_scenarios:
-                    scenario_dict = {
-                        "new_legs": scenario.new_legs,
-                        "credit_debit": scenario.credit_debit,
-                        "new_breakeven": scenario.new_breakeven,
-                        "new_expiration": scenario.new_expiration.isoformat(),
-                        "new_dte": scenario.new_dte,
-                        "days_added": scenario.days_added,
-                        "viability_score": scenario.viability_score,
-                        "max_profit_change": scenario.max_profit_change,
-                        "max_loss_change": scenario.max_loss_change
-                    }
+                    if redact.is_enabled():
+                        scenario_dict = {
+                            "new_legs": scenario.new_legs,
+                            "credit_debit": redact.dollars(scenario.credit_debit),
+                            "new_breakeven": redact.dollars(scenario.new_breakeven) if scenario.new_breakeven else None,
+                            "new_expiration": scenario.new_expiration.isoformat(),
+                            "new_dte": scenario.new_dte,
+                            "days_added": scenario.days_added,
+                            "viability_score": scenario.viability_score,
+                            "max_profit_change": scenario.max_profit_change,
+                            "max_loss_change": scenario.max_loss_change
+                        }
+                    else:
+                        scenario_dict = {
+                            "new_legs": scenario.new_legs,
+                            "credit_debit": scenario.credit_debit,
+                            "new_breakeven": scenario.new_breakeven,
+                            "new_expiration": scenario.new_expiration.isoformat(),
+                            "new_dte": scenario.new_dte,
+                            "days_added": scenario.days_added,
+                            "viability_score": scenario.viability_score,
+                            "max_profit_change": scenario.max_profit_change,
+                            "max_loss_change": scenario.max_loss_change
+                        }
 
                     scenarios_by_type[scenario.scenario_type].append(scenario_dict)
 

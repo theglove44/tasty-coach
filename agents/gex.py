@@ -206,7 +206,7 @@ class GEXAgent:
             # Get option chain
             self.logger.info(f"Fetching option chain for {symbol}...")
             try:
-                chain = get_option_chain(self.session, symbol)
+                chain = await get_option_chain(self.session, symbol)
             except Exception as e:
                 return GEXResult(
                     symbol=symbol, spot_price=spot, total_gex=0, zero_gamma_level=None,
@@ -260,7 +260,7 @@ class GEXAgent:
             for i in range(0, len(all_symbols), 100):
                 chunk = all_symbols[i:i + 100]
                 try:
-                    market_data = get_market_data_by_type(self.session, options=chunk)
+                    market_data = await get_market_data_by_type(self.session, options=chunk)
                     for md in market_data:
                         entry = {}
                         if md.open_interest is not None:

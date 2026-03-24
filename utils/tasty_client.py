@@ -117,7 +117,7 @@ class TastyClient:
         session = self.get_session()
         if not session:
             return []
-        return Account.get(session)
+        return await Account.get(session)
 
     async def get_account(self, account_number: Optional[str] = None) -> Account:
         """Return the selected account by number (async).
@@ -130,7 +130,7 @@ class TastyClient:
         if not session:
             raise ValueError("Failed to establish session")
 
-        accounts = Account.get(session)
+        accounts = await Account.get(session)
         if not accounts:
             raise ValueError("No accounts found")
 
