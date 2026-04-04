@@ -39,6 +39,9 @@ class SnapshotData:
     net_change: float = 0.0
     percent_change: float = 0.0
     description: str = ""
+    prev_close: float = 0.0
+    iv_rank: Optional[float] = None
+    iv_percentile: Optional[float] = None
 
 
 class ScannerAgent:
@@ -57,7 +60,10 @@ class ScannerAgent:
         
         if not target:
             # Try public
-            watchlists = await PublicWatchlist.get(self.session)
+            try:
+                watchlists = await PublicWatchlist.get(self.session)
+            except TypeError:
+                watchlists = PublicWatchlist.get(self.session)
             target = next((w for w in watchlists if w.name == watchlist_name), None)
             
         if not target:
@@ -117,7 +123,7 @@ class ScannerAgent:
                     if not found:
                         # Fallback: try future option chain
                         try:
-                            chain = get_future_option_chain(self.session, product_code)
+                            chain = await get_future_option_chain(self.session, product_code)
                             if chain:
                                 first_exp = list(chain.keys())[0]
                                 strike = chain[first_exp][0]
@@ -145,22 +151,23 @@ class ScannerAgent:
                          resolved_futures.append(f)
 
                 data = await get_market_data_by_type(self.session, futures=resolved_futures)
-                
+
                 for d in data:
                     last = float(d.last) if d.last else 0.0
                     prev = float(d.prev_close) if d.prev_close else 0.0
                     change = last - prev
                     pct = (change / prev) * 100 if prev != 0 else 0.0
-                    
+
                     snapshot_data.append(SnapshotData(
                         symbol=d.symbol,
                         last=last,
                         net_change=change,
                         percent_change=pct,
-                        description=getattr(d, 'description', "")
+                        description=getattr(d, 'description', ""),
+                        prev_close=prev,
                     ))
 
-            
+
             # Fetch Equities/Indices
             if equities:
                 data = await get_market_data_by_type(self.session, equities=equities)
@@ -169,13 +176,14 @@ class ScannerAgent:
                     prev = float(d.prev_close) if d.prev_close else 0.0
                     change = last - prev
                     pct = (change / prev) * 100 if prev != 0 else 0.0
-                    
+
                     snapshot_data.append(SnapshotData(
                         symbol=d.symbol,
                         last=last,
                         net_change=change,
                         percent_change=pct,
-                        description=getattr(d, 'description', "")
+                        description=getattr(d, 'description', ""),
+                        prev_close=prev,
                     ))
 
         except Exception as e:
@@ -194,7 +202,7 @@ class ScannerAgent:
             
             # Fetch Metrics
             try:
-                metrics_list = get_market_metrics(self.session, batch)
+                metrics_list = await get_market_metrics(self.session, batch)
                 metrics = {m.symbol: m for m in metrics_list}
                 prices_list = await get_market_data_by_type(self.session, equities=batch)
                 prices = {d.symbol: d for d in prices_list}
@@ -258,6 +266,43 @@ class ScannerAgent:
         report.append("-" * 70)
         report.append("-" * 70)
         return "\n".join(report)
+
+    async def enrich_with_iv(self, snapshot_data: List[SnapshotData]) -> None:
+        """Fetch IV rank for equity symbols in the snapshot and attach to SnapshotData in-place."""
+        equity_items = [s for s in snapshot_data if not s.symbol.startswith('/')]
+        if not equity_items:
+            return
+
+        equity_symbols = [s.symbol for s in equity_items]
+        try:
+            metrics_list = await get_market_metrics(self.session, equity_symbols)
+            metrics = {m.symbol: m for m in metrics_list}
+            for item in equity_items:
+                m = metrics.get(item.symbol)
+                if m:
+                    if m.implied_volatility_index_rank is not None:
+                        item.iv_rank = round(float(m.implied_volatility_index_rank) * 100, 1)
+                    if m.implied_volatility_percentile is not None:
+                        item.iv_percentile = round(float(m.implied_volatility_percentile) * 100, 1)
+        except Exception as e:
+            self.logger.warning(f"IV enrichment failed: {e}")
+
+    def print_snapshot_json(self, data: List[SnapshotData]) -> None:
+        """Print snapshot data as JSON for machine consumption."""
+        import json
+        output = []
+        for item in data:
+            output.append({
+                "symbol": item.symbol,
+                "last": item.last,
+                "net_change": item.net_change,
+                "percent_change": item.percent_change,
+                "prev_close": item.prev_close,
+                "description": item.description,
+                "iv_rank": item.iv_rank,
+                "iv_percentile": item.iv_percentile,
+            })
+        print(json.dumps(output))
 
     def print_snapshot(self, data: List[SnapshotData]) -> None:
         """Print a market snapshot table - Discord friendly format."""

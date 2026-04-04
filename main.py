@@ -25,6 +25,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-watchlists", "-l", action="store_true", help="List available watchlists")
     parser.add_argument("--market", "-m", action="store_true", help="Check Market Status")
     parser.add_argument("--snapshot", "-s", action="store_true", help="Market Snapshot")
+    parser.add_argument("--json", "-j", action="store_true", help="Output snapshot as JSON (use with --snapshot)")
     parser.add_argument("--report", "-r", action="store_true", help="Generate Account Report (use --discord for Discord format)")
     parser.add_argument("--review-position", type=str, metavar="SYMBOL", help="Review position and show roll scenarios for underlying (e.g. --review-position SLV)")
     parser.add_argument("--output", "-o", type=str, help="Output file path for JSON export (use with --review-position)")
@@ -124,16 +125,22 @@ async def async_main() -> int:
             return 0
 
         if args.snapshot:
-            print("\n📸 Fetching Market Snapshot...")
+            if not args.json:
+                print("\n📸 Fetching Market Snapshot...")
             symbols = await scanner.get_symbols_from_watchlist("Snapshot", equity_only=False)
-            
+
             if not symbols:
                 print("❌ Watchlist 'Snapshot' not found or empty.")
                 print("   Please create a watchlist named 'Snapshot' with your desired symbols (e.g. /ESH6, /NQH6, VIX)")
                 return 1
-            
+
             snapshot_data = await scanner.get_market_snapshot(symbols)
-            scanner.print_snapshot(snapshot_data)
+
+            if args.json:
+                await scanner.enrich_with_iv(snapshot_data)
+                scanner.print_snapshot_json(snapshot_data)
+            else:
+                scanner.print_snapshot(snapshot_data)
             return 0
 
         if args.report:
