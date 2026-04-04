@@ -45,6 +45,14 @@ cp .env.example .env
 ./venv/bin/python main.py --test-connection
 ```
 
+5. Open the interactive launcher:
+```bash
+./venv/bin/python main.py
+
+# or explicitly
+./venv/bin/python main.py --menu
+```
+
 ## Configuration
 
 Create a `.env` file in the project root with your Tastytrade OAuth credentials:
@@ -86,6 +94,19 @@ TASTY_ACCOUNT_NUMBER=your_account_number
 ```bash
 ./venv/bin/python main.py --test-connection
 ```
+
+### Interactive Launcher
+```bash
+./venv/bin/python main.py
+./venv/bin/python main.py --menu
+```
+
+The launcher opens as a keyboard-driven terminal UI in an interactive shell. Use the arrow keys or `j` / `k` to move, `Enter` to run the selected action, and `1-9`, `a`, or `q` for shortcuts.
+It also refreshes the market status panel automatically, and the watchlist workflow now includes a searchable watchlist picker instead of a raw text prompt.
+Function keys are also mapped: `F1` toggles help, `F2` refreshes the home screen, `F3` opens watchlist workflow, `F4` shows market status, `F5` shows portfolio health, and `F10` quits.
+The watchlist picker now uses fuzzy matching, previews symbols for the highlighted watchlist before selection, and the IVR scan runs in a split-pane live results view.
+The position review flow now includes a symbol picker sourced from either the selected watchlist or your open positions, with manual entry as a fallback.
+The market snapshot flow now uses the same symbol picker, so `--snapshot` is no longer a watchlist-only prompt.
 
 ### List Watchlists
 ```bash
@@ -169,6 +190,7 @@ Get a quick price snapshot from a watchlist named "Snapshot" in your Tastytrade 
 | `--threshold, -t PCT` | Override IVR threshold (default: 25%) |
 | `--test-connection, -c` | Test API connectivity |
 | `--list-watchlists, -l` | List available watchlists |
+| `--menu` | Open the interactive launcher |
 | `--market, -m` | Check market session status |
 | `--snapshot, -s` | Market snapshot from "Snapshot" watchlist |
 | `--report, -r` | Generate account positions report |

@@ -17,18 +17,22 @@ class DXFeed:
         self.session = session
         self.logger = logging.getLogger(__name__)
 
-    async def get_realtime_iv(self, option_symbols: List[str], timeout: float = 10.0) -> Dict[str, float]:
-        """Retrieves real-time IV for a list of option symbols."""
-        if not option_symbols:
+    async def get_realtime_iv(
+        self,
+        streamer_symbols: List[str],
+        timeout: float = 10.0,
+    ) -> Dict[str, float]:
+        """Retrieves real-time IV for a list of DXLink streamer symbols."""
+        if not streamer_symbols:
             return {}
 
         iv_results = {}
         try:
             async with DXLinkStreamer(self.session) as streamer:
-                await streamer.subscribe(Greeks, option_symbols)
+                await streamer.subscribe(Greeks, streamer_symbols)
                 
                 start_time = time.time()
-                symbols_to_find = set(option_symbols)
+                symbols_to_find = set(streamer_symbols)
                 
                 while symbols_to_find and (time.time() - start_time) < timeout:
                     try:

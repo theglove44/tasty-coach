@@ -3,14 +3,13 @@
 import calendar
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from tastytrade import Account, Session
 from tastytrade.utils import today_in_new_york
-
-from utils import redact
 
 EXTERNAL_FLOW_SUBTYPES = {
     "ACAT",
@@ -19,6 +18,18 @@ EXTERNAL_FLOW_SUBTYPES = {
     "Transfer",
     "Withdrawal",
 }
+
+NEW_YORK_TZ = ZoneInfo("America/New_York")
+
+
+def _format_dollars(value: Decimal) -> str:
+    """Format a decimal dollar amount for CLI output."""
+    return f"{float(value):,.2f}"
+
+
+def _format_account(account_number: Optional[str]) -> str:
+    """Return the account number as-is when no redaction helper is available."""
+    return account_number or "Unknown"
 
 
 @dataclass
@@ -30,6 +41,8 @@ class PerformancePeriod:
     end_date: date
     start_time: datetime
     end_time: datetime
+    start_time_utc: datetime
+    end_time_utc: datetime
 
 
 class AccountHistoryAgent:
@@ -48,7 +61,7 @@ class AccountHistoryAgent:
 
     async def _get_account(self) -> Account:
         """Fetch the configured account."""
-        accounts = await Account.get(self.session)
+        accounts = Account.get(self.session)
         if not accounts:
             raise ValueError("No accounts found.")
 
@@ -81,12 +94,15 @@ class AccountHistoryAgent:
 
             last_day = calendar.monthrange(month_start.year, month_start.month)[1]
             month_end = month_start.replace(day=last_day)
+            end_date = min(month_end, current_day)
             return PerformancePeriod(
                 label=month_start.strftime("%B %Y"),
                 start_date=month_start,
-                end_date=min(month_end, current_day),
-                start_time=datetime.combine(month_start, time.min),
-                end_time=datetime.combine(min(month_end, current_day), time.max),
+                end_date=end_date,
+                start_time=self._local_midnight(month_start),
+                end_time=self._local_end_of_day(end_date),
+                start_time_utc=self._local_midnight(month_start).astimezone(timezone.utc),
+                end_time_utc=self._local_end_of_day(end_date).astimezone(timezone.utc),
             )
 
         normalized_range = range_name or "month"
@@ -106,8 +122,10 @@ class AccountHistoryAgent:
             label=label,
             start_date=start_date,
             end_date=current_day,
-            start_time=datetime.combine(start_date, time.min),
-            end_time=datetime.combine(current_day, time.max),
+            start_time=self._local_midnight(start_date),
+            end_time=self._local_end_of_day(current_day),
+            start_time_utc=self._local_midnight(start_date).astimezone(timezone.utc),
+            end_time_utc=self._local_end_of_day(current_day).astimezone(timezone.utc),
         )
 
     async def build_performance_report(
@@ -120,14 +138,14 @@ class AccountHistoryAgent:
             raise ValueError("Account is not initialized")
 
         period = self.resolve_period(range_name=range_name, month=month)
-        nlv_history = await self.account.get_net_liquidating_value_history(
+        nlv_history = self.account.get_net_liquidating_value_history(
             self.session,
-            start_time=period.start_time,
+            start_time=period.start_time_utc.replace(tzinfo=None),
         )
         nlv_history = [
-            item for item in nlv_history if self._history_point_time(item.time) <= period.end_time
+            item for item in nlv_history if self._history_point_time(item.time) <= period.end_time_utc
         ]
-        transactions = await self.account.get_history(
+        transactions = self.account.get_history(
             self.session,
             sort="Asc",
             start_date=period.start_date,
@@ -148,8 +166,8 @@ class AccountHistoryAgent:
 
         external_flows = self._extract_external_flows(
             transactions,
-            period_start=period.start_time,
-            period_end=period.end_time,
+            period_start=period.start_time_utc,
+            period_end=period.end_time_utc,
         )
         net_external_flow = sum((flow["amount"] for flow in external_flows), Decimal("0"))
         adjusted_pnl = ending_value - starting_value - net_external_flow
@@ -198,9 +216,9 @@ class AccountHistoryAgent:
             if sub_type not in EXTERNAL_FLOW_SUBTYPES:
                 continue
 
-            executed_at = getattr(tx, "executed_at", None) or datetime.combine(
-                getattr(tx, "transaction_date"),
-                time.min,
+            executed_at = self._normalize_utc_datetime(
+                getattr(tx, "executed_at", None)
+                or datetime.combine(getattr(tx, "transaction_date"), time.min, tzinfo=timezone.utc)
             )
             amount = Decimal(getattr(tx, "net_value"))
             flows.append(
@@ -253,22 +271,36 @@ class AccountHistoryAgent:
 
     def _history_point_time(self, timestamp: str) -> datetime:
         """Parse tastytrade history timestamps into comparable datetimes."""
-        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).replace(tzinfo=None)
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+    def _normalize_utc_datetime(self, value: datetime) -> datetime:
+        """Return a UTC-aware datetime for internal comparisons."""
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def _local_midnight(self, day: date) -> datetime:
+        """Return a New York-local midnight for the requested date."""
+        return datetime.combine(day, time.min, tzinfo=NEW_YORK_TZ)
+
+    def _local_end_of_day(self, day: date) -> datetime:
+        """Return a New York-local end-of-day timestamp for the requested date."""
+        return datetime.combine(day, time.max, tzinfo=NEW_YORK_TZ)
 
     def print_performance_report(self, report: Dict[str, Any], discord: bool = False) -> None:
         """Render a CLI-friendly account performance summary."""
         open_block = "```" if discord else ""
         close_block = "```" if discord else ""
-        account_number = redact.account(report["account_number"])
+        account_number = _format_account(report["account_number"])
 
         print(
             f"{open_block}ACCOUNT PERFORMANCE ({account_number})"
             f"\nPeriod:        {report['label']} ({report['start_date']} to {report['end_date']})"
-            f"\nStart NLV:     ${redact.dollars(report['starting_value'])}"
-            f"\nEnd NLV:       ${redact.dollars(report['ending_value'])}"
-            f"\nHigh / Low:    ${redact.dollars(report['high_value'])} / ${redact.dollars(report['low_value'])}"
-            f"\nNet Flows:     ${redact.dollars(report['net_external_flow'])}"
-            f"\nAdj. P&L:      ${redact.dollars(report['adjusted_pnl'])}"
+            f"\nStart NLV:     ${_format_dollars(report['starting_value'])}"
+            f"\nEnd NLV:       ${_format_dollars(report['ending_value'])}"
+            f"\nHigh / Low:    ${_format_dollars(report['high_value'])} / ${_format_dollars(report['low_value'])}"
+            f"\nNet Flows:     ${_format_dollars(report['net_external_flow'])}"
+            f"\nAdj. P&L:      ${_format_dollars(report['adjusted_pnl'])}"
             f"\nReturn:        {float(report['return_pct']):.2f}%{close_block}"
         )
 
@@ -281,6 +313,6 @@ class AccountHistoryAgent:
         for flow in flows:
             print(
                 f"{flow['date']} | {flow['sub_type']:<18} | "
-                f"${redact.dollars(flow['amount'])} | {flow['description']}"
+                f"${_format_dollars(flow['amount'])} | {flow['description']}"
             )
         print(close_block)

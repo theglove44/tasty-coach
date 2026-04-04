@@ -8,12 +8,12 @@ import logging
 from typing import Optional
 
 from utils.tasty_client import TastyClient
-from utils import redact
 from agents.scanner import ScannerAgent
 from agents.portfolio import PortfolioAgent
 from agents.strategy import StrategyAgent
 from agents.manager import RiskManager
 from utils.market_schedule import MarketSchedule
+from utils.launcher_ui import LauncherUI
 
 
 def setup_argument_parser() -> argparse.ArgumentParser:
@@ -27,6 +27,18 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--snapshot", "-s", action="store_true", help="Market Snapshot")
     parser.add_argument("--json", "-j", action="store_true", help="Output snapshot as JSON (use with --snapshot)")
     parser.add_argument("--report", "-r", action="store_true", help="Generate Account Report (use --discord for Discord format)")
+    parser.add_argument(
+        "--history",
+        choices=["week", "month", "year"],
+        help="Review account performance over the previous week, month, or year",
+    )
+    parser.add_argument(
+        "--history-month",
+        type=str,
+        metavar="YYYY-MM",
+        help="Review account performance for a specific calendar month",
+    )
+    parser.add_argument("--menu", action="store_true", help="Open the interactive command menu")
     parser.add_argument("--review-position", type=str, metavar="SYMBOL", help="Review position and show roll scenarios for underlying (e.g. --review-position SLV)")
     parser.add_argument("--output", "-o", type=str, help="Output file path for JSON export (use with --review-position)")
     parser.add_argument("--discord", "-d", action="store_true", help="Format output for Discord")
@@ -38,7 +50,6 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard", action="store_true", help="Market Quality Dashboard (no account needed)")
     parser.add_argument("--html", action="store_true", help="Open dashboard in browser (use with --dashboard)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
-    parser.add_argument("--redact", action="store_true", help="Mask account numbers and dollar amounts for screenshots")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
 
@@ -57,9 +68,6 @@ async def async_main() -> int:
     parser = setup_argument_parser()
     args = parser.parse_args()
 
-    if args.redact:
-        redact.enable()
-
     client = TastyClient()
 
     if args.debug:
@@ -77,7 +85,7 @@ async def async_main() -> int:
                 accounts = await client.get_accounts()
                 print(f"✅ Found {len(accounts)} accounts")
                 for a in accounts:
-                    acct_num = redact.account(getattr(a, "account_number", "?"))
+                    acct_num = getattr(a, "account_number", "?")
                     nickname = getattr(a, "nickname", "") or ""
                     extra = f" ({nickname})" if nickname else ""
                     print(f"  • {acct_num}{extra}")
@@ -96,6 +104,15 @@ async def async_main() -> int:
             print("❌ Failed to establish session")
             return 1
 
+        if args.menu or (len(sys.argv) == 1 and sys.stdin.isatty() and sys.stdout.isatty()):
+            launcher = LauncherUI(
+                client,
+                session,
+                account_number=args.account or client.config.account_number,
+                default_threshold=args.threshold or client.config.ivr_threshold,
+            )
+            return await launcher.run()
+
         if args.dashboard:
             from agents.dashboard import run_dashboard
             return await run_dashboard(session, html=args.html)
@@ -107,7 +124,7 @@ async def async_main() -> int:
         if len(accounts) > 1 and not account_number:
             print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
             for a in accounts:
-                acct_num = redact.account(getattr(a, "account_number", "?"))
+                acct_num = getattr(a, "account_number", "?")
                 nickname = getattr(a, "nickname", "") or ""
                 extra = f" ({nickname})" if nickname else ""
                 print(f"  • {acct_num}{extra}")
@@ -148,6 +165,24 @@ async def async_main() -> int:
             await portfolio.print_positions_report(discord=args.discord)
             return 0
 
+        if args.history or args.history_month:
+            from agents.history import AccountHistoryAgent
+
+            if args.history and args.history_month:
+                print("❌ Use either --history or --history-month, not both.")
+                return 1
+
+            history = await AccountHistoryAgent(
+                session,
+                account_number=account_number,
+            ).init()
+            report = await history.build_performance_report(
+                range_name=args.history,
+                month=args.history_month,
+            )
+            history.print_performance_report(report, discord=args.discord)
+            return 0
+
         if args.review_position:
             from agents.reviewer import ReviewerAgent
 
@@ -172,10 +207,10 @@ async def async_main() -> int:
             from tastytrade.watchlists import PrivateWatchlist, PublicWatchlist
 
             print("\nPrivate Watchlists:")
-            for w in await PrivateWatchlist.get(session):
+            for w in PrivateWatchlist.get(session):
                 print(f"  • {w.name}")
             print("\nPublic Watchlists:")
-            for w in await PublicWatchlist.get(session):
+            for w in PublicWatchlist.get(session):
                 print(f"  • {w.name}")
             return 0
 
@@ -185,13 +220,13 @@ async def async_main() -> int:
 
             risk_report = await risk_manager.calculate_portfolio_risk()
 
-            print(f"💰 NLV: ${redact.dollars(risk_report['nlv'])}")
+            print(f"💰 NLV: ${risk_report['nlv']:,.2f}")
             print(
                 f"📊 BP Usage: {risk_report['bp_usage_pct']:.2f}% [{risk_report['bp_usage_status']}]"
             )
-            print(f"💵 Cash: ${redact.dollars(risk_report['cash_balance'])} | Day Trade BP: ${redact.dollars(risk_report['day_trading_buying_power'])}")
+            print(f"💵 Cash: ${risk_report['cash_balance']:,.2f} | Day Trade BP: ${risk_report['day_trading_buying_power']:,.2f}")
             if risk_report.get('day_trade_excess') is not None:
-                print(f"📉 Day Trade Excess: ${redact.dollars(risk_report['day_trade_excess'])}")
+                print(f"📉 Day Trade Excess: ${risk_report['day_trade_excess']:,.2f}")
 
             print(
                 f"⚖️  Portfolio Delta: {risk_report['portfolio_delta']:.2f} | Theta: {risk_report['portfolio_theta']:.2f} [{risk_report['theta_status']}]"
