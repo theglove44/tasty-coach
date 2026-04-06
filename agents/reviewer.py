@@ -221,7 +221,7 @@ class ReviewerAgent:
             symbols = [p.symbol for p in position_legs]
             quotes_map = {}
             try:
-                quotes = await get_market_data_by_type(self.session, options=symbols)
+                quotes = get_market_data_by_type(self.session, options=symbols)
                 quotes_map = {q.symbol: q for q in quotes}
             except Exception as e:
                 self.logger.warning(f"Failed to fetch market data: {e}")
@@ -283,7 +283,7 @@ class ReviewerAgent:
             # Fetch underlying price
             underlying_price = 0.0
             try:
-                underlying_quotes = await get_market_data_by_type(
+                underlying_quotes = get_market_data_by_type(
                     self.session,
                     equities=[underlying]
                 )
@@ -329,7 +329,7 @@ class ReviewerAgent:
         """
         try:
             # Get nested chain for expiration list
-            chains = await NestedOptionChain.get(self.session, underlying)
+            chains = NestedOptionChain.get(self.session, underlying)
             if not chains:
                 return {}
 
@@ -365,7 +365,7 @@ class ReviewerAgent:
                 return {}
 
             # Fetch full option chain
-            full_chain = await get_option_chain(self.session, underlying)
+            full_chain = get_option_chain(self.session, underlying)
 
             # Organize chain data
             chain_data = {
@@ -539,7 +539,7 @@ class ReviewerAgent:
             for i in range(0, len(symbols), batch_size):
                 batch = symbols[i:i + batch_size]
                 try:
-                    quotes = await get_market_data_by_type(self.session, options=batch)
+                    quotes = get_market_data_by_type(self.session, options=batch)
                     for q in quotes:
                         quotes_map[q.symbol] = q
                 except Exception as e:

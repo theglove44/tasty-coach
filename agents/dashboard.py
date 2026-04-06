@@ -128,14 +128,14 @@ class DashboardAgent:
     def _fetch_rest_data(self) -> None:
         """Fetch all REST data (synchronous SDK calls)."""
         try:
-            eq_data = await get_market_data_by_type(self.session, equities=ALL_EQUITIES)
+            eq_data = get_market_data_by_type(self.session, equities=ALL_EQUITIES)
             self.equity_data = {d.symbol: d for d in eq_data}
         except Exception as e:
             logger.error(f"Failed to fetch equity data: {e}")
             self.warnings.append("Equity market data unavailable")
 
         try:
-            idx_data = await get_market_data_by_type(self.session, indices=['VIX', 'TNX'])
+            idx_data = get_market_data_by_type(self.session, indices=['VIX', 'TNX'])
             self.index_data = {d.symbol: d for d in idx_data}
         except Exception as e:
             logger.error(f"Failed to fetch index data: {e}")

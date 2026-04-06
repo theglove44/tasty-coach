@@ -113,14 +113,14 @@ class TastyClient:
             return True
 
     async def get_accounts(self) -> List[Account]:
-        """Get all accounts (async)."""
+        """Get all accounts."""
         session = self.get_session()
         if not session:
             return []
-        return await Account.get(session)
+        return Account.get(session)
 
     async def get_account(self, account_number: Optional[str] = None) -> Account:
-        """Return the selected account by number (async).
+        """Return the selected account by number.
 
         If multiple accounts exist and none is specified, raise to avoid accidentally
         using the wrong one.
@@ -130,7 +130,7 @@ class TastyClient:
         if not session:
             raise ValueError("Failed to establish session")
 
-        accounts = await Account.get(session)
+        accounts = Account.get(session)
         if not accounts:
             raise ValueError("No accounts found")
 

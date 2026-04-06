@@ -24,7 +24,7 @@ class PortfolioAgent:
 
     async def _get_account(self) -> Optional[Account]:
         try:
-            accounts = await Account.get(self.session)
+            accounts = Account.get(self.session)
             if not accounts:
                 return None
 
@@ -47,7 +47,7 @@ class PortfolioAgent:
         if not self.account:
             return {}
         try:
-            balances = await self.account.get_balances(self.session)
+            balances = self.account.get_balances(self.session)
             return {
                 "net_liquidating_value": float(balances.net_liquidating_value),
                 "equity_buying_power": float(balances.equity_buying_power),
@@ -68,7 +68,7 @@ class PortfolioAgent:
         if not self.account:
             return []
         try:
-            return await self.account.get_positions(self.session)
+            return self.account.get_positions(self.session)
         except Exception as e:
             self.logger.error(f"Error fetching positions: {e}")
             return []
@@ -214,14 +214,14 @@ class PortfolioAgent:
         batch_size = 50
         try:
             if equity_symbols:
-                eq_quotes = await get_market_data_by_type(self.session, equities=equity_symbols)
+                eq_quotes = get_market_data_by_type(self.session, equities=equity_symbols)
                 quotes_map.update({q.symbol: q for q in eq_quotes})
             for i in range(0, len(option_symbols), batch_size):
                 batch = option_symbols[i:i + batch_size]
-                opt_quotes = await get_market_data_by_type(self.session, options=batch)
+                opt_quotes = get_market_data_by_type(self.session, options=batch)
                 quotes_map.update({q.symbol: q for q in opt_quotes})
             if future_symbols:
-                fut_quotes = await get_market_data_by_type(self.session, futures=future_symbols)
+                fut_quotes = get_market_data_by_type(self.session, futures=future_symbols)
                 quotes_map.update({q.symbol: q for q in fut_quotes})
         except Exception as e:
             self.logger.warning(f"Failed to fetch market data: {e}. P/L may be inaccurate.")
