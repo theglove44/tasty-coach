@@ -192,7 +192,7 @@ class TradeDB:
         count = 0
         for txn in transactions:
             try:
-                self.conn.execute(
+                cursor = self.conn.execute(
                     """INSERT OR IGNORE INTO transactions
                        (id, account_number, transaction_type, transaction_sub_type,
                         description, executed_at, transaction_date, value, net_value,
@@ -224,8 +224,7 @@ class TradeDB:
                         json.dumps(txn),
                     ),
                 )
-                if self.conn.total_changes:
-                    count += 1
+                count += cursor.rowcount
             except Exception as e:
                 logger.warning(f"Failed to insert transaction {txn.get('id')}: {e}")
         self.conn.commit()
@@ -236,7 +235,7 @@ class TradeDB:
         count = 0
         for order in orders:
             try:
-                self.conn.execute(
+                cursor = self.conn.execute(
                     """INSERT OR IGNORE INTO orders
                        (id, account_number, time_in_force, order_type,
                         underlying_symbol, underlying_instrument_type, status,
@@ -263,8 +262,7 @@ class TradeDB:
                         json.dumps(order),
                     ),
                 )
-                if self.conn.total_changes:
-                    count += 1
+                count += cursor.rowcount
             except Exception as e:
                 logger.warning(f"Failed to insert order {order.get('id')}: {e}")
         self.conn.commit()

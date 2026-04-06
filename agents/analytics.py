@@ -96,7 +96,7 @@ class AnalyticsAgent:
             params = [acct]
 
             if start_date:
-                sql += " AND opened_at >= ?"
+                sql += " AND closed_at >= ?"
                 params.append(start_date)
             if end_date:
                 sql += " AND closed_at <= ?"
@@ -161,7 +161,7 @@ class AnalyticsAgent:
             """
             params = [acct]
             if start_date:
-                sql += " AND opened_at >= ?"
+                sql += " AND closed_at >= ?"
                 params.append(start_date)
             if end_date:
                 sql += " AND closed_at <= ?"
