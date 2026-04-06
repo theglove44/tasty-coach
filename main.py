@@ -39,6 +39,22 @@ def setup_argument_parser() -> argparse.ArgumentParser:
         help="Review account performance for a specific calendar month",
     )
     parser.add_argument("--menu", action="store_true", help="Open the interactive command menu")
+    parser.add_argument("--transactions", action="store_true", help="Show recent transaction history")
+    parser.add_argument("--orders", action="store_true", help="Show recent order history")
+    parser.add_argument("--days", type=int, default=30, help="Days to look back (default: 30, use with --transactions/--orders)")
+    parser.add_argument("--symbol", type=str, help="Filter by underlying symbol (use with --transactions/--orders)")
+    parser.add_argument("--type", type=str, dest="txn_type", help="Filter transaction type: Trade, 'Receive Deliver', etc.")
+    parser.add_argument("--sync", action="store_true", help="Sync trade history to local database")
+    parser.add_argument("--sync-full", action="store_true", help="Full re-sync of trade history")
+    parser.add_argument("--trades", action="store_true", help="Show trade groups from local DB")
+    parser.add_argument("--trade", type=str, metavar="SYMBOL", help="Show trade groups for a specific underlying")
+    parser.add_argument("--performance", action="store_true", help="Show trading performance summary")
+    parser.add_argument("--performance-by-strategy", action="store_true", help="Show performance broken down by strategy type")
+    parser.add_argument("--pl-daily", action="store_true", help="Show daily P/L summary")
+    parser.add_argument("--pl-weekly", action="store_true", help="Show weekly P/L summary")
+    parser.add_argument("--pl-monthly", action="store_true", help="Show monthly P/L summary")
+    parser.add_argument("--equity-curve", action="store_true", help="Show NLV equity curve")
+    parser.add_argument("--period", type=str, default="3m", help="Time period: 1m, 3m, 6m, 1y, all (default: 3m, use with --performance/--pl-*/--equity-curve)")
     parser.add_argument("--review-position", type=str, metavar="SYMBOL", help="Review position and show roll scenarios for underlying (e.g. --review-position SLV)")
     parser.add_argument("--output", "-o", type=str, help="Output file path for JSON export (use with --review-position)")
     parser.add_argument("--discord", "-d", action="store_true", help="Format output for Discord")
@@ -181,6 +197,100 @@ async def async_main() -> int:
                 month=args.history_month,
             )
             history.print_performance_report(report, discord=args.discord)
+            return 0
+
+        if args.transactions:
+            from agents.history import HistoryAgent
+
+            print(f"\nFetching transaction history (last {args.days} days)...")
+            history = await HistoryAgent(session, account_number=account_number).init()
+            transactions = await history.get_transactions(
+                days=args.days,
+                symbol=args.symbol,
+                transaction_type=args.txn_type,
+            )
+            history.print_transactions(transactions, discord=args.discord)
+            return 0
+
+        if args.orders:
+            from agents.history import HistoryAgent
+
+            print(f"\nFetching order history (last {args.days} days)...")
+            history = await HistoryAgent(session, account_number=account_number).init()
+            orders = await history.get_orders(
+                days=args.days,
+                symbol=args.symbol,
+            )
+            history.print_orders(orders, discord=args.discord)
+            return 0
+
+        if args.sync or args.sync_full:
+            from agents.history import HistoryAgent
+
+            mode = "full" if args.sync_full else "incremental"
+            print(f"\nSyncing trade history ({mode})...")
+            history = await HistoryAgent(session, account_number=account_number).init()
+            result = await history.sync(full=args.sync_full)
+            print(
+                f"Synced: {result['transactions']} transactions, "
+                f"{result['orders']} orders, "
+                f"{result['groups']} new trade groups"
+            )
+            return 0
+
+        if args.trades or args.trade:
+            from agents.history import HistoryAgent
+
+            history = await HistoryAgent(session, account_number=account_number).init()
+            acct = account_number or (history.account.account_number if history.account else "")
+            history.print_trade_groups(
+                acct,
+                underlying=args.trade,
+                discord=args.discord,
+            )
+            return 0
+
+        if args.performance or args.performance_by_strategy:
+            from agents.analytics import AnalyticsAgent
+
+            analytics = await AnalyticsAgent(session, account_number=account_number).init()
+            start = analytics._parse_period(args.period)
+            start_str = start.isoformat() if start else None
+
+            if args.performance_by_strategy:
+                strategies = analytics.get_strategy_performance(start_date=start_str)
+                analytics.print_strategy_breakdown(strategies, discord=args.discord)
+            else:
+                summary = analytics.get_performance_summary(start_date=start_str)
+                analytics.print_performance(summary, discord=args.discord)
+            return 0
+
+        if args.pl_daily or args.pl_weekly or args.pl_monthly:
+            from agents.analytics import AnalyticsAgent
+
+            analytics = await AnalyticsAgent(session, account_number=account_number).init()
+            start = analytics._parse_period(args.period)
+            start_str = start.isoformat() if start else None
+
+            if args.pl_daily:
+                data = analytics.get_daily_pl(start_date=start_str)
+                analytics.print_pl_summary(data, "day", discord=args.discord)
+            elif args.pl_weekly:
+                data = analytics.get_weekly_pl(start_date=start_str)
+                analytics.print_pl_summary(data, "week", discord=args.discord)
+            else:
+                data = analytics.get_monthly_pl(start_date=start_str)
+                analytics.print_pl_summary(data, "month", discord=args.discord)
+            return 0
+
+        if args.equity_curve:
+            from agents.analytics import AnalyticsAgent
+
+            analytics = await AnalyticsAgent(session, account_number=account_number).init()
+            time_back_map = {"1m": "1m", "3m": "3m", "6m": "6m", "1y": "1y", "2y": "2y", "all": "all"}
+            time_back = time_back_map.get(args.period, "1y")
+            data = await analytics.get_equity_curve(time_back=time_back)
+            analytics.print_equity_curve(data, discord=args.discord)
             return 0
 
         if args.review_position:
