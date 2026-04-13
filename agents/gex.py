@@ -257,8 +257,8 @@ class GEXAgent:
             market_data_map = {}
             all_symbols = [opt.symbol for opt in all_options]
 
-            for i in range(0, len(all_symbols), 100):
-                chunk = all_symbols[i:i + 100]
+            for i in range(0, len(all_symbols), 50):
+                chunk = all_symbols[i:i + 50]
                 try:
                     market_data = get_market_data_by_type(self.session, options=chunk)
                     for md in market_data:

@@ -72,7 +72,8 @@ class ScannerAgent:
             symbol = entry.symbol if hasattr(entry, 'symbol') else entry.get('symbol')
             inst_type = entry.instrument_type if hasattr(entry, 'instrument_type') else entry.get('instrument-type')
             
-            if equity_only and inst_type != InstrumentType.EQUITY:
+            inst_type_str = inst_type.value if hasattr(inst_type, 'value') else str(inst_type or '')
+            if equity_only and inst_type_str != InstrumentType.EQUITY.value:
                 continue
             symbols.append(symbol)
             
@@ -210,7 +211,7 @@ class ScannerAgent:
                     
                     ivr = IVRData(symbol=symbol)
                     if data:
-                        ivr.current_price = data.mark or data.last
+                        ivr.current_price = data.mark if data.mark is not None else data.last
                         ivr.volume = data.volume
                         
                     if metric:
