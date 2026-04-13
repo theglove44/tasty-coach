@@ -214,11 +214,26 @@ class ScannerAgent:
                         ivr.volume = data.volume
                         
                     if metric:
-                        ivr.iv_rank = (float(metric.implied_volatility_index_rank) * 100) if metric.implied_volatility_index_rank else None
-                        ivr.iv_percentile = (float(metric.implied_volatility_percentile) * 100) if metric.implied_volatility_percentile else None
-                        ivr.current_iv = float(metric.implied_volatility_index) if metric.implied_volatility_index else None
-                        ivr.beta = float(metric.beta) if metric.beta else None
-                        ivr.liquidity_rank = float(metric.liquidity_rank) if metric.liquidity_rank else None
+                        try:
+                            ivr.iv_rank = (float(metric.implied_volatility_index_rank) * 100) if metric.implied_volatility_index_rank else None
+                        except (ValueError, TypeError):
+                            ivr.iv_rank = None
+                        try:
+                            ivr.iv_percentile = (float(metric.implied_volatility_percentile) * 100) if metric.implied_volatility_percentile else None
+                        except (ValueError, TypeError):
+                            ivr.iv_percentile = None
+                        try:
+                            ivr.current_iv = float(metric.implied_volatility_index) if metric.implied_volatility_index else None
+                        except (ValueError, TypeError):
+                            ivr.current_iv = None
+                        try:
+                            ivr.beta = float(metric.beta) if metric.beta else None
+                        except (ValueError, TypeError):
+                            ivr.beta = None
+                        try:
+                            ivr.liquidity_rank = float(metric.liquidity_rank) if metric.liquidity_rank else None
+                        except (ValueError, TypeError):
+                            ivr.liquidity_rank = None
                         if metric.earnings and metric.earnings.expected_report_date:
                             ivr.next_earnings_date = metric.earnings.expected_report_date.strftime('%m/%d')
                         ivr.has_options = True

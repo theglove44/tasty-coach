@@ -42,7 +42,7 @@ class DXFeed:
                                 iv_results[greeks_event.event_symbol] = float(greeks_event.volatility)
                                 symbols_to_find.remove(greeks_event.event_symbol)
                     except asyncio.TimeoutError:
-                        break
+                        continue
                     except Exception as e:
                         self.logger.debug(f"Streaming error: {e}")
                         break

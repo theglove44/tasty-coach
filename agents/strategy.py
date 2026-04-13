@@ -115,7 +115,8 @@ class StrategyAgent:
         try:
             chains = NestedOptionChain.get(self.session, symbol)
             if not chains: return []
-            chain = chains[0]
+            chain = chains[0] if len(chains) >= 1 else None
+            if not chain: return []
             target_exp = self._get_target_expiration(chain)
             if not target_exp: 
                 self.logger.warning(f"No 45 DTE monthly expiration found for {symbol}")

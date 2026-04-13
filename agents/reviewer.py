@@ -333,7 +333,9 @@ class ReviewerAgent:
             if not chains:
                 return {}
 
-            chain = chains[0]
+            chain = chains[0] if len(chains) >= 1 else None
+            if not chain:
+                return {}
 
             # Filter to monthly expirations (3rd Friday pattern)
             monthly_exps = []
