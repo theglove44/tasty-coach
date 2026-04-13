@@ -567,7 +567,7 @@ class ReviewerAgent:
                     'bid': float(quote.bid) if quote and quote.bid else 0.0,
                     'ask': float(quote.ask) if quote and quote.ask else 0.0,
                     'mark': float(quote.mark) if quote and quote.mark else 0.0,
-                    'volume': int(quote.total_volume) if quote and hasattr(quote, 'total_volume') else 0,
+                    'volume': int(quote.volume) if quote and hasattr(quote, 'volume') else 0,
                     'open_interest': int(quote.open_interest) if quote and hasattr(quote, 'open_interest') else 0
                 }
                 enriched_options.append(opt_dict)

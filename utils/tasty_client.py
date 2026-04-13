@@ -97,10 +97,13 @@ class TastyClient:
                 return None
 
         if self.is_session_expired():
-            # SDK v12+ auto-refreshes, but if expired, re-authenticate
-            self.session = None
-            if not self.authenticate():
-                return None
+            try:
+                self.session.refresh()
+            except Exception as e:
+                self.logger.error(f"Token refresh failed: {e}")
+                self.session = None
+                if not self.authenticate():
+                    return None
 
         return self.session
 
