@@ -38,6 +38,7 @@ from utils.tasty_client import TastyClient  # noqa: E402
 
 DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "spx_morning_snapshot.json"
 DEFAULT_SYMBOLS = ["SPX", "SPY", "XSP", "VIX", "/ES", "/NQ"]
+DEFAULT_WATCHLIST = "Snapshot"
 DEFAULT_GEX_UNDERLYING = "SPY"
 
 logger = logging.getLogger("spx_morning_snapshot")
@@ -140,6 +141,8 @@ async def build_snapshot(
     gex_underlying: str,
     gex_max_dte: int,
     gex_wait_seconds: float,
+    symbols: Optional[List[str]] = None,
+    watchlist_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     client = TastyClient()
     if not client.authenticate():
@@ -156,17 +159,34 @@ async def build_snapshot(
     warnings: List[str] = []
     fallbacks_used: List[str] = []
 
-    # 1) REST snapshot + IV metrics
-    snapshot_data = await scanner.get_market_snapshot(DEFAULT_SYMBOLS)
+    # 1) Resolve symbols
+    if symbols is None and watchlist_name:
+        try:
+            resolved = await scanner.get_symbols_from_watchlist(watchlist_name, equity_only=False)
+        except Exception as exc:
+            resolved = []
+            warnings.append(f"Watchlist '{watchlist_name}' lookup failed: {exc}")
+        if resolved:
+            symbols = resolved
+        else:
+            warnings.append(
+                f"Watchlist '{watchlist_name}' not found or empty; falling back to DEFAULT_SYMBOLS"
+            )
+            fallbacks_used.append(f"watchlist:{watchlist_name}->DEFAULT_SYMBOLS")
+    if not symbols:
+        symbols = DEFAULT_SYMBOLS
+
+    # 2) REST snapshot + IV metrics
+    snapshot_data = await scanner.get_market_snapshot(symbols)
     if not snapshot_data:
         raise RuntimeError("Market snapshot returned no data")
 
     await scanner.enrich_with_iv(snapshot_data)
-    symbols = _normalize_symbols(snapshot_data)
+    symbols_dict = _normalize_symbols(snapshot_data)
 
     # Verify important data is present
     required_keys = ["SPX", "SPY", "VIX", "/ES"]
-    missing_required = [key for key in required_keys if key not in symbols]
+    missing_required = [key for key in required_keys if key not in symbols_dict]
     if missing_required:
         warnings.append(f"Missing required snapshot symbols: {', '.join(missing_required)}")
 
@@ -216,8 +236,8 @@ async def build_snapshot(
         warnings.append(f"Market session lookup failed: {exc}")
 
     # 4) Simple derived layer for Hermes to use
-    overnight_bias = _derive_overnight_bias(symbols, warnings)
-    vol_regime = _derive_vol_regime(symbols)
+    overnight_bias = _derive_overnight_bias(symbols_dict, warnings)
+    vol_regime = _derive_vol_regime(symbols_dict)
     if vol_regime is None:
         warnings.append("Volatility regime unavailable: missing VIX level")
 
@@ -226,6 +246,8 @@ async def build_snapshot(
         "source": {
             "primary": "tastytrade_rest_dxlink",
             "gex_underlying": gex_underlying,
+            "watchlist_used": watchlist_name,
+            "symbols_requested": symbols,
             "build_version": "v1",
         },
         "status": {
@@ -234,10 +256,10 @@ async def build_snapshot(
             "warnings": warnings,
             "fallbacks_used": fallbacks_used,
         },
-        "symbols": symbols,
+        "symbols": symbols_dict,
         "volatility": {
-            "vix_level": symbols.get("VIX", {}).get("last"),
-            "vix_iv_percentile": symbols.get("VIX", {}).get("iv_percentile"),
+            "vix_level": symbols_dict.get("VIX", {}).get("last"),
+            "vix_iv_percentile": symbols_dict.get("VIX", {}).get("iv_percentile"),
             "vix_trend_5d": None,
             "put_call_ratio": None,
         },
@@ -261,6 +283,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT,
         help=f"Output path (default: {DEFAULT_OUTPUT})",
+    )
+    parser.add_argument(
+        "--watchlist",
+        type=str,
+        default=DEFAULT_WATCHLIST,
+        help=f"Watchlist name to pull symbols from (default: {DEFAULT_WATCHLIST})",
     )
     parser.add_argument(
         "--gex-underlying",
@@ -306,6 +334,7 @@ async def async_main() -> int:
         gex_underlying=args.gex_underlying,
         gex_max_dte=args.gex_max_dte,
         gex_wait_seconds=args.gex_wait_seconds,
+        watchlist_name=args.watchlist,
     )
 
     if args.pretty:

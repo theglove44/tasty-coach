@@ -67,16 +67,33 @@ class ScannerAgent:
             self.logger.error(f"Watchlist '{watchlist_name}' not found")
             return []
 
+        # Instrument types that get_market_snapshot() knows how to route.
+        # EQUITY / EQUITY_INDEX -> equities bucket; FUTURE -> futures bucket.
+        # Options, future options, etc. are skipped to avoid misrouting.
+        snapshot_supported = {
+            InstrumentType.EQUITY.value,
+            "Equity Index",  # EQUITY_INDEX / index underlyings (SPX, VIX, XSP)
+            InstrumentType.FUTURE.value,
+        }
+
         symbols = []
         for entry in target.watchlist_entries:
             symbol = entry.symbol if hasattr(entry, 'symbol') else entry.get('symbol')
             inst_type = entry.instrument_type if hasattr(entry, 'instrument_type') else entry.get('instrument-type')
-            
+
             inst_type_str = inst_type.value if hasattr(inst_type, 'value') else str(inst_type or '')
-            if equity_only and inst_type_str != InstrumentType.EQUITY.value:
-                continue
+            if equity_only:
+                if inst_type_str != InstrumentType.EQUITY.value:
+                    continue
+            else:
+                if inst_type_str and inst_type_str not in snapshot_supported:
+                    self.logger.debug(
+                        f"Skipping '{symbol}' from watchlist: "
+                        f"instrument type '{inst_type_str}' not supported by snapshot"
+                    )
+                    continue
             symbols.append(symbol)
-            
+
         return symbols
 
     async def get_market_snapshot(self, symbols: List[str]) -> List[SnapshotData]:
