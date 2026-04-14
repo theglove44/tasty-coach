@@ -5,7 +5,9 @@ import sys
 import asyncio
 import argparse
 import logging
+import json
 from typing import Optional
+from datetime import datetime as dt, date
 
 from utils.tasty_client import TastyClient
 from agents.scanner import ScannerAgent
@@ -14,6 +16,7 @@ from agents.strategy import StrategyAgent
 from agents.manager import RiskManager
 from utils.market_schedule import MarketSchedule
 from utils.launcher_ui import LauncherUI
+from agents.options_researcher import OptionsResearcherAgent
 
 
 def setup_argument_parser() -> argparse.ArgumentParser:
@@ -65,6 +68,9 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dashboard", action="store_true", help="Market Quality Dashboard (no account needed)")
     parser.add_argument("--html", action="store_true", help="Open dashboard in browser (use with --dashboard)")
+    parser.add_argument("--research", metavar='SYMBOL', type=str, help="Research options chain for SYMBOL and output ranked trade ideas")
+    parser.add_argument("--expiration", metavar='YYYY-MM-DD', type=str, help="Target expiration for --research (default: nearest monthly ~45 DTE)")
+    parser.add_argument("--format", choices=['json', 'text'], default='text', help="Output format for --research (default: text)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
@@ -76,6 +82,104 @@ def _warn_if_not_in_venv() -> None:
             "⚠️  You are not running inside the project venv. "
             "If you see import/type errors, run: source venv/bin/activate"
         )
+
+
+def _print_research_text(report: dict) -> None:
+    """Print research report in human-readable text format"""
+    symbol = report.get('symbol', '?')
+    status = report.get('status', '?')
+    expiration = report.get('expiration')
+    dte = report.get('dte')
+    resolution = report.get('expiration_resolution', '?')
+    warnings = report.get('warnings', [])
+    underlying = report.get('underlying', {})
+    chain_summary = report.get('chain_summary', {})
+    ideas = report.get('trade_ideas', [])
+
+    print(f"\n{'='*80}")
+    print(f"Options Research Report - {symbol}")
+    print(f"{'='*80}")
+
+    print(f"\nStatus: {status}")
+    if expiration:
+        print(f"Expiration: {expiration} ({dte} DTE)")
+    print(f"Resolution Mode: {resolution}")
+
+    if underlying:
+        if 'ivr' in underlying:
+            print(f"IVR: {underlying['ivr']:.1f}%")
+        if 'iv' in underlying:
+            print(f"IV: {underlying['iv']:.1%}")
+
+    if chain_summary:
+        print(f"\nChain Summary:")
+        print(f"  Total Strikes: {chain_summary.get('total_strikes', 0)}")
+        print(f"  Calls: {chain_summary.get('calls', 0)}")
+        print(f"  Puts: {chain_summary.get('puts', 0)}")
+        print(f"  Strikes with Greeks: {chain_summary.get('strikes_with_greeks', 0)}")
+
+    if warnings:
+        print(f"\nWarnings:")
+        for w in warnings:
+            print(f"  • {w}")
+
+    if not ideas:
+        print(f"\nNo viable trade ideas found.")
+        return
+
+    print(f"\n{'='*80}")
+    print(f"Trade Ideas ({len(ideas)} ranked)")
+    print(f"{'='*80}")
+
+    for idea in ideas:
+        rank = idea.get('rank')
+        strategy = idea.get('strategy', '?')
+        dte_idea = idea.get('dte', 0)
+        width = idea.get('width', 0)
+        credit = idea.get('credit', 0)
+        max_loss = idea.get('max_loss', 0)
+        credit_pct = idea.get('credit_pct_of_width', 0)
+        short_delta = idea.get('short_delta', 0)
+        pop = idea.get('pop_estimate', 0)
+        score = idea.get('score', 0)
+        score_breakdown = idea.get('score_breakdown', {})
+        breakevens = idea.get('breakevens', [])
+        net_greeks = idea.get('net_greeks', {})
+        legs = idea.get('legs', [])
+
+        print(f"\n[{rank}] {strategy}")
+        print(f"    {'─'*76}")
+        print(f"    Width: ${width:.2f} | Credit: ${credit:.2f} ({credit_pct:.1%}) | Max Loss: ${max_loss:.2f}")
+        print(f"    Short Delta: {short_delta:.2f} | POP: {pop:.1%} | DTE: {dte_idea}")
+        print(f"    Breakeven: {', '.join(f'${be:.2f}' for be in breakevens)}")
+        print(f"    Net Greeks: Δ={net_greeks.get('delta', 0):.2f}, Γ={net_greeks.get('gamma', 0):.4f}, " +
+              f"Θ={net_greeks.get('theta', 0):.2f}, ν={net_greeks.get('vega', 0):.2f}")
+        print(f"    Score: {score:.1f}/100")
+        if score_breakdown:
+            raw = score_breakdown.get('raw_components', {})
+            print(f"      Credit: {raw.get('credit_component', 0):.2f}, " +
+                  f"Delta: {raw.get('delta_component', 0):.2f}, " +
+                  f"DTE: {raw.get('dte_component', 0):.2f}, " +
+                  f"Liquidity: {raw.get('liquidity_component', 0):.2f}")
+
+        print(f"\n    Legs:")
+        for i, leg in enumerate(legs, 1):
+            action = leg.get('action', '?')
+            opt_type = leg.get('option_type', '?')
+            strike = leg.get('strike', 0)
+            bid = leg.get('bid')
+            ask = leg.get('ask')
+            mid = leg.get('mid')
+            oi = leg.get('open_interest', 0)
+            delta = leg.get('delta', 0)
+
+            mid_str = f"${mid:.2f}" if mid else "N/A"
+            bid_ask_str = ""
+            if bid is not None and ask is not None:
+                bid_ask_str = f" (bid: ${bid:.2f}, ask: ${ask:.2f})"
+
+            print(f"      [{i}] {action:4s} {opt_type:4s} ${strike:7.2f} @ {mid_str}{bid_ask_str} " +
+                  f"(OI: {oi:5d}, Δ: {delta:6.2f})")
 
 
 async def async_main() -> int:
@@ -132,6 +236,29 @@ async def async_main() -> int:
         if args.dashboard:
             from agents.dashboard import run_dashboard
             return await run_dashboard(session, html=args.html)
+
+        if args.research:
+            symbol = args.research.strip().upper()
+            exp_date = None
+            if args.expiration:
+                try:
+                    exp_date = dt.strptime(args.expiration, '%Y-%m-%d').date()
+                except ValueError:
+                    print(f"Invalid --expiration format: {args.expiration}. Use YYYY-MM-DD.")
+                    return 2
+
+            agent = OptionsResearcherAgent(session)
+            report = await agent.research(symbol, exp_date)
+
+            if args.format == 'json':
+                print(json.dumps(report, indent=2, default=str))
+            else:
+                _print_research_text(report)
+
+            status = report.get('status', '')
+            if status in ('INVALID_SYMBOL', 'NO_CHAIN', 'EXPIRATION_NOT_FOUND'):
+                return 2
+            return 0
 
         account_number: Optional[str] = args.account or client.config.account_number
 
