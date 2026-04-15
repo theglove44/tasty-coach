@@ -358,9 +358,9 @@ class OptionsResearcherAgent:
         for opt in options:
             # Get market data
             md = md_map.get(opt.symbol)
-            bid = float(md.bid) if md and md.bid else None
-            ask = float(md.ask) if md and md.ask else None
-            mark = float(md.mark) if md and md.mark else None
+            bid = float(md.bid) if md and md.bid is not None else None
+            ask = float(md.ask) if md and md.ask is not None else None
+            mark = float(md.mark) if md and md.mark is not None else None
 
             # Calculate mid
             if bid is not None and ask is not None:
@@ -383,9 +383,11 @@ class OptionsResearcherAgent:
                 dropped_count += 1
                 continue
 
-            # Get volume and OI
-            volume = getattr(md, 'volume', None) if md else None
-            open_interest = getattr(md, 'open_interest', None) if md else None
+            # Get volume and OI (SDK returns Decimal; coerce to int for math safety)
+            volume_raw = getattr(md, 'volume', None) if md else None
+            oi_raw = getattr(md, 'open_interest', None) if md else None
+            volume = int(volume_raw) if volume_raw is not None else None
+            open_interest = int(oi_raw) if oi_raw is not None else None
 
             row = StrikeRow(
                 streamer_symbol=opt.streamer_symbol,

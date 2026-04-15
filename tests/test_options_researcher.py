@@ -816,6 +816,49 @@ class TestConfigurableThresholds(unittest.TestCase):
         self.assertGreater(score_loose, score_strict)
 
 
+class TestDecimalCoercion(unittest.IsolatedAsyncioTestCase):
+    """Regression: SDK market data returns Decimal for volume/OI; must coerce to int."""
+
+    async def test_build_enriched_chain_coerces_decimal_oi_and_volume(self):
+        from tastytrade.instruments import OptionType as _OT
+
+        opt = MagicMock()
+        opt.streamer_symbol = '.XYZ'
+        opt.symbol = 'OCC-XYZ'
+        opt.option_type = _OT.PUT
+        opt.strike_price = Decimal('100')
+
+        md = MagicMock()
+        md.symbol = 'OCC-XYZ'
+        md.bid = Decimal('1.00')
+        md.ask = Decimal('1.10')
+        md.mark = Decimal('1.05')
+        md.volume = Decimal('250')
+        md.open_interest = Decimal('800')
+
+        agent = OptionsResearcherAgent(MagicMock())
+
+        greek = MagicMock()
+        greek.delta = Decimal('-0.30')
+        greek.gamma = Decimal('0.01')
+        greek.theta = Decimal('-0.05')
+        greek.vega = Decimal('0.10')
+        greek.volatility = Decimal('0.25')
+
+        with patch.object(agent, '_fetch_market_data_batched', new=AsyncMock(return_value={'OCC-XYZ': md})), \
+             patch.object(agent, '_fetch_greeks', new=AsyncMock(return_value={'.XYZ': greek})):
+            rows = await agent._build_enriched_chain([opt], date(2026, 5, 15))
+
+        self.assertEqual(len(rows), 1)
+        self.assertIsInstance(rows[0].open_interest, int)
+        self.assertIsInstance(rows[0].volume, int)
+        self.assertEqual(rows[0].open_interest, 800)
+
+        # Liquidity score must not raise Decimal/float TypeError
+        score = agent._calculate_liquidity_score(rows)
+        self.assertIsInstance(score, float)
+
+
 class TestPrintResearchTextNoneHandling(unittest.TestCase):
     """Verify --research text printer handles None ivr/iv (Problem 2)."""
 
