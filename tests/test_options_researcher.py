@@ -740,5 +740,123 @@ class TestOptionsResearcherAgent(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(idea.breakeven[1], expected_call_be, places=2)
 
 
+def _make_row(option_type, strike, delta, mid=1.0, bid=0.95, ask=1.05, oi=500):
+    return StrikeRow(
+        streamer_symbol=f".{option_type}{strike}",
+        occ_symbol=f"OCC{option_type}{strike}",
+        expiration=date(2026, 5, 15),
+        option_type=option_type,
+        strike=float(strike),
+        bid=bid, ask=ask, mid=mid,
+        volume=100, open_interest=oi,
+        delta=delta, gamma=0.01, theta=-0.05, vega=0.10, iv=0.25,
+    )
+
+
+class TestConfigurableThresholds(unittest.TestCase):
+    """Verify CLI-configurable scoring thresholds (Problems 1 and 4)."""
+
+    def setUp(self):
+        self.session = MagicMock()
+
+    def test_default_constants_widened(self):
+        self.assertEqual(SHORT_DELTA_MIN, 0.15)
+        self.assertEqual(SHORT_DELTA_MAX, 0.45)
+        self.assertAlmostEqual(MIN_CREDIT_RATIO, 0.25)
+
+    def test_agent_defaults_fall_back_to_constants(self):
+        agent = OptionsResearcherAgent(self.session)
+        self.assertEqual(agent.min_credit_ratio, MIN_CREDIT_RATIO)
+        self.assertEqual(agent.min_delta, SHORT_DELTA_MIN)
+        self.assertEqual(agent.max_delta, SHORT_DELTA_MAX)
+
+    def test_find_short_leg_custom_delta_bounds(self):
+        rows = [
+            _make_row('PUT', 100, -0.18),
+            _make_row('PUT',  95, -0.10),
+            _make_row('PUT', 105, -0.30),
+        ]
+        agent = OptionsResearcherAgent(self.session, min_delta=0.05, max_delta=0.50)
+        best = agent._find_short_leg(rows, 'PUT')
+        self.assertIsNotNone(best)
+        self.assertAlmostEqual(abs(best.delta), 0.30)
+
+    def test_find_short_leg_narrow_custom_bounds_rejects(self):
+        rows = [_make_row('PUT', 100, -0.18)]
+        agent = OptionsResearcherAgent(self.session, min_delta=0.25, max_delta=0.35)
+        self.assertIsNone(agent._find_short_leg(rows, 'PUT'))
+
+    def test_build_vertical_accepts_26pct_with_custom_ratio(self):
+        rows = [
+            _make_row('PUT', 100, -0.30, mid=2.00, bid=1.95, ask=2.05),
+            _make_row('PUT',  95, -0.18, mid=0.70, bid=0.65, ask=0.75),
+        ]
+        agent = OptionsResearcherAgent(self.session, min_credit_ratio=0.25)
+        idea = agent._build_vertical(rows, 'PUT', 'TEST', date(2026, 5, 15), 30)
+        self.assertIsNotNone(idea)
+        self.assertGreaterEqual(idea.credit_pct_of_width, 0.25)
+
+    def test_build_vertical_rejects_26pct_with_stricter_ratio(self):
+        rows = [
+            _make_row('PUT', 100, -0.30, mid=2.00, bid=1.95, ask=2.05),
+            _make_row('PUT',  95, -0.18, mid=0.70, bid=0.65, ask=0.75),
+        ]
+        agent = OptionsResearcherAgent(self.session, min_credit_ratio=0.34)
+        idea = agent._build_vertical(rows, 'PUT', 'TEST', date(2026, 5, 15), 30)
+        self.assertIsNone(idea)
+
+    def test_score_idea_uses_instance_min_credit_ratio(self):
+        draft = {'credit_pct_of_width': 0.30, 'short_delta': 0.30, 'dte': 45, 'legs': []}
+        loose = OptionsResearcherAgent(self.session, min_credit_ratio=0.20)
+        strict = OptionsResearcherAgent(self.session, min_credit_ratio=0.30)
+        score_loose, bd_loose = loose._score_idea(draft)
+        score_strict, bd_strict = strict._score_idea(draft)
+        self.assertGreater(bd_loose['raw_components']['credit_component'], 0)
+        self.assertEqual(bd_strict['raw_components']['credit_component'], 0)
+        self.assertGreater(score_loose, score_strict)
+
+
+class TestPrintResearchTextNoneHandling(unittest.TestCase):
+    """Verify --research text printer handles None ivr/iv (Problem 2)."""
+
+    def test_none_ivr_iv_does_not_crash(self):
+        from main import _print_research_text
+        import io
+        from contextlib import redirect_stdout
+
+        report = {
+            'symbol': 'XYZ', 'status': 'EXPIRATION_NOT_FOUND',
+            'expiration': '2026-05-15', 'dte': 30,
+            'expiration_resolution': 'EXPLICIT',
+            'underlying': {'ivr': None, 'iv': None},
+            'chain_summary': {}, 'warnings': [], 'trade_ideas': [],
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_research_text(report)
+        out = buf.getvalue()
+        self.assertIn('IVR: N/A', out)
+        self.assertIn('IV: N/A', out)
+
+    def test_floats_formatted_when_present(self):
+        from main import _print_research_text
+        import io
+        from contextlib import redirect_stdout
+
+        report = {
+            'symbol': 'XYZ', 'status': 'OK',
+            'expiration': '2026-05-15', 'dte': 30,
+            'expiration_resolution': 'EXPLICIT',
+            'underlying': {'ivr': 85.4, 'iv': 0.327},
+            'chain_summary': {}, 'warnings': [], 'trade_ideas': [],
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_research_text(report)
+        out = buf.getvalue()
+        self.assertIn('IVR: 85.4%', out)
+        self.assertIn('IV: 32.7%', out)
+
+
 if __name__ == '__main__':
     unittest.main()

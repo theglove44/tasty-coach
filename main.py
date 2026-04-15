@@ -71,6 +71,9 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--research", metavar='SYMBOL', type=str, help="Research options chain for SYMBOL and output ranked trade ideas")
     parser.add_argument("--expiration", metavar='YYYY-MM-DD', type=str, help="Target expiration for --research (default: nearest monthly ~45 DTE)")
     parser.add_argument("--format", choices=['json', 'text'], default='text', help="Output format for --research (default: text)")
+    parser.add_argument("--min-credit-ratio", type=float, default=None, help="Minimum credit as fraction of spread width (default: 0.25)")
+    parser.add_argument("--min-delta", type=float, default=None, help="Minimum absolute short delta (default: 0.15)")
+    parser.add_argument("--max-delta", type=float, default=None, help="Maximum absolute short delta (default: 0.45)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
@@ -106,10 +109,16 @@ def _print_research_text(report: dict) -> None:
     print(f"Resolution Mode: {resolution}")
 
     if underlying:
-        if 'ivr' in underlying:
-            print(f"IVR: {underlying['ivr']:.1f}%")
-        if 'iv' in underlying:
-            print(f"IV: {underlying['iv']:.1%}")
+        ivr_val = underlying.get('ivr')
+        iv_val = underlying.get('iv')
+        if ivr_val is not None:
+            print(f"IVR: {ivr_val:.1f}%")
+        else:
+            print("IVR: N/A")
+        if iv_val is not None:
+            print(f"IV: {iv_val:.1%}")
+        else:
+            print("IV: N/A")
 
     if chain_summary:
         print(f"\nChain Summary:")
@@ -247,7 +256,12 @@ async def async_main() -> int:
                     print(f"Invalid --expiration format: {args.expiration}. Use YYYY-MM-DD.")
                     return 2
 
-            agent = OptionsResearcherAgent(session)
+            agent = OptionsResearcherAgent(
+                session,
+                min_credit_ratio=args.min_credit_ratio,
+                min_delta=args.min_delta,
+                max_delta=args.max_delta,
+            )
             report = await agent.research(symbol, exp_date)
 
             if args.format == 'json':

@@ -20,12 +20,13 @@ DEFAULT_DTE_TARGET = 45
 DTE_FALLBACK_MIN = 25
 DTE_FALLBACK_MAX = 75
 TARGET_SHORT_DELTA = 0.30
-SHORT_DELTA_MIN = 0.20
-SHORT_DELTA_MAX = 0.40
-MIN_CREDIT_RATIO = 1.0 / 3.0
+SHORT_DELTA_MIN = 0.15
+SHORT_DELTA_MAX = 0.45
+MIN_CREDIT_RATIO = 0.25
 SPREAD_WIDTHS = [1, 2.5, 5, 10]
 GREEKS_TIMEOUT_SECONDS = 8
-MARKET_DATA_BATCH_SIZE = 50
+MARKET_DATA_BATCH_SIZE = 20
+MARKET_DATA_MAX_URL_CHARS = 400
 MAX_IDEAS_RETURNED = 20
 
 
@@ -79,9 +80,20 @@ class TradeIdea:
 class OptionsResearcherAgent:
     """Research options chains and score trade ideas"""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        min_credit_ratio: Optional[float] = None,
+        min_delta: Optional[float] = None,
+        max_delta: Optional[float] = None,
+    ) -> None:
         self.session = session
         self.logger = logging.getLogger(__name__)
+        self.min_credit_ratio = (
+            min_credit_ratio if min_credit_ratio is not None else MIN_CREDIT_RATIO
+        )
+        self.min_delta = min_delta if min_delta is not None else SHORT_DELTA_MIN
+        self.max_delta = max_delta if max_delta is not None else SHORT_DELTA_MAX
 
     async def research(
         self,
@@ -330,16 +342,7 @@ class OptionsResearcherAgent:
         streamer_symbols = [o.streamer_symbol for o in options]
         occ_symbols = [o.symbol for o in options]
 
-        # Fetch market data in batches
-        md_map: Dict[str, Any] = {}
-        for i in range(0, len(occ_symbols), MARKET_DATA_BATCH_SIZE):
-            batch = occ_symbols[i:i + MARKET_DATA_BATCH_SIZE]
-            try:
-                market_data = get_market_data_by_type(self.session, options=batch)
-                for md in market_data:
-                    md_map[md.symbol] = md
-            except Exception as e:
-                self.logger.warning(f"Error fetching market data batch: {e}")
+        md_map = await self._fetch_market_data_batched(occ_symbols)
 
         # Fetch greeks
         greeks_map: Dict[str, Greeks] = {}
@@ -411,6 +414,54 @@ class OptionsResearcherAgent:
 
         return rows
 
+    async def _fetch_market_data_batched(self, occ_symbols: List[str]) -> Dict[str, Any]:
+        """Fetch market data with URL-length-aware batching and halving retry on failure."""
+        md_map: Dict[str, Any] = {}
+        if not occ_symbols:
+            return md_map
+
+        batches: List[List[str]] = []
+        current: List[str] = []
+        current_chars = 0
+        for sym in occ_symbols:
+            sym_chars = len(sym) + 3
+            if current and (
+                len(current) >= MARKET_DATA_BATCH_SIZE
+                or current_chars + sym_chars > MARKET_DATA_MAX_URL_CHARS
+            ):
+                batches.append(current)
+                current = []
+                current_chars = 0
+            current.append(sym)
+            current_chars += sym_chars
+        if current:
+            batches.append(current)
+
+        def fetch(batch: List[str], depth: int = 0) -> None:
+            if not batch:
+                return
+            try:
+                market_data = get_market_data_by_type(self.session, options=batch)
+                for md in market_data:
+                    md_map[md.symbol] = md
+            except Exception as e:
+                if len(batch) == 1 or depth >= 4:
+                    self.logger.warning(
+                        f"Error fetching market data batch (size={len(batch)}): {e}"
+                    )
+                    return
+                self.logger.debug(
+                    f"Batch failed (size={len(batch)}), splitting: {e}"
+                )
+                mid = len(batch) // 2
+                fetch(batch[:mid], depth + 1)
+                fetch(batch[mid:], depth + 1)
+
+        for b in batches:
+            fetch(b)
+
+        return md_map
+
     async def _fetch_greeks(self, streamer_symbols: List[str], timeout: int) -> Dict[str, Greeks]:
         """Fetch Greeks for streamer symbols with timeout"""
         greeks_map: Dict[str, Greeks] = {}
@@ -464,7 +515,7 @@ class OptionsResearcherAgent:
             r for r in rows
             if r.option_type == option_type
             and r.delta is not None
-            and SHORT_DELTA_MIN <= abs(r.delta) <= SHORT_DELTA_MAX
+            and self.min_delta <= abs(r.delta) <= self.max_delta
         ]
 
         if not candidates:
@@ -554,9 +605,9 @@ class OptionsResearcherAgent:
 
             # Check minimum credit ratio
             credit_pct = credit / width
-            if credit_pct < MIN_CREDIT_RATIO:
+            if credit_pct < self.min_credit_ratio:
                 self.logger.debug(
-                    f"{symbol} {option_type} spread: credit {credit_pct:.2%} < {MIN_CREDIT_RATIO:.2%}"
+                    f"{symbol} {option_type} spread: credit {credit_pct:.2%} < {self.min_credit_ratio:.2%}"
                 )
                 continue
 
@@ -753,7 +804,10 @@ class OptionsResearcherAgent:
         legs = idea_draft.get('legs', [])
 
         # Credit component
-        C = self._clamp((credit_pct - MIN_CREDIT_RATIO) / MIN_CREDIT_RATIO, 0, 1)
+        if self.min_credit_ratio > 0:
+            C = self._clamp((credit_pct - self.min_credit_ratio) / self.min_credit_ratio, 0, 1)
+        else:
+            C = 0.0
 
         # Delta component
         D = 1.0 - min(abs(abs(short_delta) - 0.30) / 0.10, 1.0)
