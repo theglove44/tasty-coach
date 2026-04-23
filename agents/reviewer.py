@@ -69,6 +69,26 @@ class ReviewerAgent:
         self.portfolio: Optional[PortfolioAgent] = None
         self.logger = logging.getLogger(__name__)
 
+    @staticmethod
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        """Convert quote fields to float while treating missing values as defaults."""
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int = 0) -> int:
+        """Convert quote fields to int while treating missing values as defaults."""
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     async def init(self) -> 'ReviewerAgent':
         """Async initialization - call after creating instance."""
         self.portfolio = await PortfolioAgent(self.session, self.account_number).init()
@@ -566,11 +586,11 @@ class ReviewerAgent:
                     'strike': float(opt.strike_price),
                     'option_type': option_type_str,
                     'expiration': opt.expiration_date if hasattr(opt, 'expiration_date') else None,
-                    'bid': float(quote.bid) if quote and quote.bid else 0.0,
-                    'ask': float(quote.ask) if quote and quote.ask else 0.0,
-                    'mark': float(quote.mark) if quote and quote.mark else 0.0,
-                    'volume': int(quote.volume) if quote and hasattr(quote, 'volume') else 0,
-                    'open_interest': int(quote.open_interest) if quote and hasattr(quote, 'open_interest') else 0
+                    'bid': self._coerce_float(getattr(quote, 'bid', None)) if quote else 0.0,
+                    'ask': self._coerce_float(getattr(quote, 'ask', None)) if quote else 0.0,
+                    'mark': self._coerce_float(getattr(quote, 'mark', None)) if quote else 0.0,
+                    'volume': self._coerce_int(getattr(quote, 'volume', None)) if quote else 0,
+                    'open_interest': self._coerce_int(getattr(quote, 'open_interest', None)) if quote else 0
                 }
                 enriched_options.append(opt_dict)
 
@@ -579,6 +599,29 @@ class ReviewerAgent:
         except Exception as e:
             self.logger.error(f"Error enriching chain data: {e}", exc_info=True)
             return {'options': []}
+
+    @staticmethod
+    def _format_leg_summary(legs: List[Dict[str, Any]]) -> str:
+        """Format option legs with action, strike, and put/call side."""
+        if not legs:
+            return "-"
+
+        def sort_key(leg: Dict[str, Any]) -> tuple[int, float, str]:
+            option_type = str(leg.get('option_type', '')).upper()
+            side_rank = 0 if option_type in {'PUT', 'P'} else 1
+            return (side_rank, float(leg.get('strike', 0) or 0), str(leg.get('action', '')))
+
+        summaries = []
+        for leg in sorted(legs, key=sort_key):
+            action = str(leg.get('action', '')).upper() or "?"
+            option_type = str(leg.get('option_type', '')).upper()
+            side = "P" if option_type in {'PUT', 'P'} else "C" if option_type in {'CALL', 'C'} else option_type[:1] or "?"
+            strike = float(leg.get('strike', 0) or 0)
+            quantity = int(abs(leg.get('quantity', 1) or 1))
+            quantity_prefix = f"{quantity}x " if quantity != 1 else ""
+            summaries.append(f"{quantity_prefix}{action} {strike:g}{side}")
+
+        return " / ".join(summaries)
 
     def print_review_report(self, results: List[ReviewResult], discord: bool = False):
         """
@@ -646,7 +689,7 @@ class ReviewerAgent:
             if result.roll_scenarios:
                 scenarios_table = Table(title="Roll Scenarios (Sorted by Viability)", box=box.ROUNDED)
                 scenarios_table.add_column("Type", style="cyan")
-                scenarios_table.add_column("New Strikes", style="white")
+                scenarios_table.add_column("New Legs", style="white")
                 scenarios_table.add_column("Expiration", style="yellow")
                 scenarios_table.add_column("DTE", style="white")
                 scenarios_table.add_column("Credit/Debit", style="green")
@@ -656,10 +699,7 @@ class ReviewerAgent:
 
                 for scenario in result.roll_scenarios[:10]:  # Top 10
                     type_str = scenario.scenario_type.replace('_', ' ').title()
-
-                    # Extract new strikes
-                    new_strikes = [leg['strike'] for leg in scenario.new_legs]
-                    strikes_str = f"{min(new_strikes):.1f}/{max(new_strikes):.1f}"
+                    legs_str = self._format_leg_summary(scenario.new_legs)
 
                     exp_str = scenario.new_expiration.strftime('%y-%m-%d')
                     dte_str = str(scenario.new_dte)
@@ -678,7 +718,7 @@ class ReviewerAgent:
 
                     scenarios_table.add_row(
                         type_str,
-                        strikes_str,
+                        legs_str,
                         exp_str,
                         dte_str,
                         cd_str,

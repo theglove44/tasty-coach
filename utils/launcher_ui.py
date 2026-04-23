@@ -495,40 +495,24 @@ class LauncherUI:
 
     async def _run_review_position(self) -> None:
         """Review a position and show roll scenarios."""
-        source = await self._prompt_choice(
-            "Pick a symbol from",
-            choices=["watchlist", "positions", "manual"],
-            default="watchlist",
-        )
+        symbol = (
+            await self._prompt_text(
+                "Underlying symbol to review (press Enter to pick from open positions)",
+                default="",
+            )
+        ).strip().upper() or None
 
-        symbol: Optional[str]
-        if source == "watchlist":
-            watchlist = await self._pick_watchlist("Watchlist for symbol picker")
-            if not watchlist:
-                return
-            symbols = await self._get_watchlist_symbols(watchlist)
-            if symbols:
-                symbol = await self._pick_symbol(
-                    f"Symbol from {watchlist}",
-                    symbols,
-                    source_label=f"Watchlist: {watchlist}",
-                )
-            else:
-                self.console.print(f"[yellow]No symbols found in {watchlist}; enter one manually.[/yellow]")
-                symbol = (await self._prompt_text("Underlying symbol")).strip().upper() or None
-        elif source == "positions":
+        if not symbol:
             symbols = await self._get_account_symbols()
             if symbols:
                 symbol = await self._pick_symbol(
-                    "Symbol from account positions",
+                    "Open position to review",
                     symbols,
                     source_label="Account positions",
                 )
             else:
                 self.console.print("[yellow]No open positions found; enter a symbol manually.[/yellow]")
                 symbol = (await self._prompt_text("Underlying symbol")).strip().upper() or None
-        else:
-            symbol = (await self._prompt_text("Underlying symbol")).strip().upper() or None
 
         if not symbol:
             return

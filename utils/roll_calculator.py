@@ -339,6 +339,16 @@ def calculate_roll_down_scenario(
     current_strikes = [extract_decimal(leg.get('strike', 0)) for leg in current_legs_orig]
     option_type = current_legs_orig[0].get('option_type', '').upper()
 
+    # Strike-shift rolls are only defined for single options and same-type
+    # verticals. Complex spreads such as iron condors need side-specific logic,
+    # otherwise a single target strike can collapse four legs into nonsense.
+    if len(current_legs_orig) > 2:
+        return scenarios
+    if len(current_legs_orig) == 2:
+        leg_types = {leg.get('option_type', '').upper() for leg in current_legs_orig}
+        if len(leg_types) != 1:
+            return scenarios
+
     # Determine direction based on option type
     # For puts: roll down = lower strikes
     # For calls: roll down = higher strikes (but usually called "roll up")
@@ -642,6 +652,16 @@ def calculate_roll_down_and_out_scenario(
     current_strikes = [extract_decimal(leg.get('strike', 0)) for leg in current_legs_orig]
     option_type = current_legs_orig[0].get('option_type', '').upper()
     is_put = option_type in ['PUT', 'P']
+
+    # Strike-shift rolls are only defined for single options and same-type
+    # verticals. Complex spreads such as iron condors need side-specific logic,
+    # otherwise a single target strike can collapse four legs into nonsense.
+    if len(current_legs_orig) > 2:
+        return scenarios
+    if len(current_legs_orig) == 2:
+        leg_types = {leg.get('option_type', '').upper() for leg in current_legs_orig}
+        if len(leg_types) != 1:
+            return scenarios
 
     # Calculate current metrics
     current_metrics = calculate_spread_metrics(current_legs_orig)

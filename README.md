@@ -105,7 +105,7 @@ The launcher opens as a keyboard-driven terminal UI in an interactive shell. Use
 It also refreshes the market status panel automatically, and the watchlist workflow now includes a searchable watchlist picker instead of a raw text prompt.
 Function keys are also mapped: `F1` toggles help, `F2` refreshes the home screen, `F3` opens watchlist workflow, `F4` shows market status, `F5` shows portfolio health, and `F10` quits.
 The watchlist picker now uses fuzzy matching, previews symbols for the highlighted watchlist before selection, and the IVR scan runs in a split-pane live results view.
-The position review flow now includes a symbol picker sourced from either the selected watchlist or your open positions, with manual entry as a fallback.
+The position review flow asks for an underlying symbol first, so typing `NVDA` reviews an open NVDA position directly; pressing Enter falls back to a picker sourced from open positions.
 The market snapshot flow now uses the same symbol picker, so `--snapshot` is no longer a watchlist-only prompt.
 
 ### List Watchlists
@@ -161,6 +161,8 @@ Get a quick price snapshot from a watchlist named "Snapshot" in your Tastytrade 
 # Discord formatting
 ./venv/bin/python main.py --review-position SLV --discord
 ```
+
+Roll scenario tables show proposed legs with action and option side, such as `BTO 25P / STO 30P / STO 45C / BTO 50C`, rather than ambiguous min/max strike pairs. Strike-shift roll scenarios are currently limited to single options and same-type verticals; iron condors receive roll-out scenarios until side-specific iron-condor roll logic is implemented.
 
 ### Full Scan Workflow (Watchlist + Strategy Screening)
 ```bash
