@@ -55,6 +55,7 @@ class DashboardData:
     nlv: Optional[Decimal] = None
     position_pct_nlv_warn: float = DEFAULT_POSITION_PCT_NLV_WARN
     errors: dict[str, str] = field(default_factory=dict)
+    new_alert_keys: set = field(default_factory=set)
 
 
 # --- Formatting Helpers ---
@@ -191,7 +192,8 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
             pa = await PortfolioAgent(session, account_number=account_number).init()
             status = await pa.get_account_status()
             positions = await pa.get_positions()
-            return {"status": status, "positions": positions}
+            resolved = getattr(getattr(pa, "account", None), "account_number", None)
+            return {"status": status, "positions": positions, "resolved_account": resolved}
         except Exception as e:
             logger.error(f"Error fetching portfolio data: {e}")
             data.errors["portfolio"] = str(e)
@@ -232,9 +234,13 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
         data.errors["risk"] = str(risk_result)
 
     # Unpack portfolio
+    resolved_account_number = account_number
     if isinstance(portfolio_result, dict):
         data.account_status = portfolio_result.get("status")
         data.positions = portfolio_result.get("positions")
+        resolved_account_number = (
+            portfolio_result.get("resolved_account") or account_number
+        )
     elif isinstance(portfolio_result, Exception):
         data.errors["portfolio"] = str(portfolio_result)
 
@@ -258,6 +264,29 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
             data.nlv = Decimal(str(data.account_status["net_liquidating_value"]))
     except (InvalidOperation, ValueError, TypeError):
         pass
+
+    # Persist alerts + compute "new since last view" markers. Ordering:
+    # read last_viewed → persist current batch → compute new_keys from the
+    # persisted rows (so first-seen alerts appear as new) → advance watermark.
+    # Use the resolved account number (the one PortfolioAgent actually
+    # talked to) so single-account users without --account/env still get
+    # persistence.
+    if resolved_account_number and data.risk and data.risk.get("alerts"):
+        try:
+            from utils.alert_store import AlertStore
+            from utils.db import TradeDB
+            db = TradeDB()
+            store = AlertStore(db)
+            last_viewed = store.get_last_viewed(resolved_account_number)
+            store.record_alerts(resolved_account_number, data.risk["alerts"])
+            data.new_alert_keys = store.new_alert_keys_since(
+                resolved_account_number, last_viewed
+            )
+            store.mark_viewed(resolved_account_number)
+            db.close()
+        except Exception as e:
+            logger.warning("alert persistence/markers failed: %s", e)
+            data.new_alert_keys = set()
 
     return data
 
@@ -559,6 +588,8 @@ def render_alerts_panel(data: DashboardData) -> Panel:
         "info": "bold blue",
     }
 
+    new_keys = data.new_alert_keys or set()
+
     for alert in alerts:
         severity = str(_g(alert, "severity", "info")).lower()
         category = _g(alert, "category", "")
@@ -568,6 +599,8 @@ def render_alerts_panel(data: DashboardData) -> Panel:
         severity_upper = severity.upper()
 
         row = Text()
+        if (category, message) in new_keys:
+            row.append("● ", style="bold magenta")
         row.append(severity_upper, style=color)
         row.append(f"  {category}  {message}")
         table.add_row(row)

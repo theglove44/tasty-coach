@@ -11,7 +11,7 @@ DB_PATH = Path.home() / ".tasty-coach" / "history.db"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS = [
     # Version 1: Initial schema
@@ -114,6 +114,30 @@ MIGRATIONS = [
         version INTEGER PRIMARY KEY
     );
     INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+    """,
+    # Version 2: Phase E alert persistence
+    """
+    CREATE TABLE IF NOT EXISTS alert_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_number TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message TEXT NOT NULL,
+        context TEXT,
+        recorded_at TEXT NOT NULL,
+        recorded_day TEXT NOT NULL,
+        UNIQUE(account_number, category, message, recorded_day)
+    );
+
+    CREATE TABLE IF NOT EXISTS alert_views (
+        account_number TEXT PRIMARY KEY,
+        last_viewed_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_alert_history_account_time
+        ON alert_history(account_number, recorded_at DESC);
+
+    INSERT OR IGNORE INTO schema_version (version) VALUES (2);
     """,
 ]
 

@@ -225,6 +225,7 @@ class LauncherUI:
             LauncherAction("t", "Event timeline", "Recent fills, assignments, exercises, and rolls", self._run_event_timeline),
             LauncherAction("9", "Dashboard", "Open the market quality dashboard", self._run_dashboard),
             LauncherAction("a", "Switch account", "Pick a different linked account", self._switch_account),
+            LauncherAction("s", "Settings", "Edit thresholds and alert toggles", self._run_settings_editor),
             LauncherAction("q", "Quit", "Exit the launcher", self._quit, exit_on_run=True, shortcut="F10"),
         ]
 
@@ -558,6 +559,78 @@ class LauncherUI:
             self.context.account_number if self.context else self.account_number
         )
         await run_account_dashboard(self.session, account_number=account_number)
+
+    async def _run_settings_editor(self) -> None:
+        """Launcher handler: interactive editor for Phase A settings."""
+        from rich.prompt import Confirm, Prompt
+        from rich.table import Table
+        from utils.settings import (
+            NUMERIC_KEYS,
+            OPTIONAL_NUMERIC_KEYS,
+            settings as settings_obj,
+        )
+
+        console = self.console
+        numeric_keys = sorted(NUMERIC_KEYS) + sorted(OPTIONAL_NUMERIC_KEYS)
+        toggle_keys = sorted((settings_obj.get("alert_toggles") or {}).keys())
+
+        pending: dict[str, Any] = {}
+
+        try:
+            console.print("[bold]Settings — numeric thresholds[/bold]")
+            console.print("[dim]  Enter a number to change. For optional keys, type 'none' to clear.[/dim]")
+            for key in numeric_keys:
+                current = settings_obj.get(key)
+                shown = "" if current is None else str(current)
+                answer = Prompt.ask(
+                    f"  {key}",
+                    default=shown,
+                    console=console,
+                )
+                if answer == shown:
+                    continue
+                if key in OPTIONAL_NUMERIC_KEYS and answer.strip().lower() in ("none", "null", ""):
+                    pending[key] = None
+                else:
+                    pending[key] = answer
+
+            console.print("\n[bold]Settings — alert toggles[/bold]")
+            toggles = settings_obj.get("alert_toggles") or {}
+            for cat in toggle_keys:
+                current_bool = bool(toggles.get(cat, True))
+                new_bool = Confirm.ask(
+                    f"  Enable alerts for {cat}?",
+                    default=current_bool,
+                    console=console,
+                )
+                if new_bool != current_bool:
+                    pending[f"alert_toggles.{cat}"] = new_bool
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Cancelled — no changes written.[/yellow]")
+            return
+
+        if not pending:
+            console.print("\n[dim]No changes.[/dim]")
+            return
+
+        preview = Table(title="Pending changes", show_header=True)
+        preview.add_column("Key")
+        preview.add_column("New value")
+        for k, v in pending.items():
+            preview.add_row(k, repr(v))
+        console.print(preview)
+
+        if not Confirm.ask("Save changes?", default=True, console=console):
+            console.print("[yellow]Discarded.[/yellow]")
+            return
+
+        try:
+            settings_obj.set_many(pending)
+            console.print("[green]Settings saved to {}[/green]".format(settings_obj.config_path))
+        except ValueError as e:
+            console.print(f"[red]Invalid value: {e}[/red]")
+        except OSError as e:
+            console.print(f"[red]Could not write config: {e}[/red]")
 
     async def _run_event_timeline(self) -> None:
         """Launcher handler: render event timeline for the active account."""
