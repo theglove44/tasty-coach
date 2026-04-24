@@ -55,6 +55,7 @@ class DashboardData:
     nlv: Optional[Decimal] = None
     position_pct_nlv_warn: float = DEFAULT_POSITION_PCT_NLV_WARN
     errors: dict[str, str] = field(default_factory=dict)
+    new_alert_keys: set = field(default_factory=set)
 
 
 # --- Formatting Helpers ---
@@ -258,6 +259,24 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
             data.nlv = Decimal(str(data.account_status["net_liquidating_value"]))
     except (InvalidOperation, ValueError, TypeError):
         pass
+
+    # Persist alerts + compute "new since last view" markers. Ordering:
+    # read last_viewed → persist current batch → compute new_keys from the
+    # persisted rows (so first-seen alerts appear as new) → advance watermark.
+    if account_number and data.risk and data.risk.get("alerts"):
+        try:
+            from utils.alert_store import AlertStore
+            from utils.db import TradeDB
+            db = TradeDB()
+            store = AlertStore(db)
+            last_viewed = store.get_last_viewed(account_number)
+            store.record_alerts(account_number, data.risk["alerts"])
+            data.new_alert_keys = store.new_alert_keys_since(account_number, last_viewed)
+            store.mark_viewed(account_number)
+            db.close()
+        except Exception as e:
+            logger.warning("alert persistence/markers failed: %s", e)
+            data.new_alert_keys = set()
 
     return data
 
@@ -559,6 +578,8 @@ def render_alerts_panel(data: DashboardData) -> Panel:
         "info": "bold blue",
     }
 
+    new_keys = data.new_alert_keys or set()
+
     for alert in alerts:
         severity = str(_g(alert, "severity", "info")).lower()
         category = _g(alert, "category", "")
@@ -568,6 +589,8 @@ def render_alerts_panel(data: DashboardData) -> Panel:
         severity_upper = severity.upper()
 
         row = Text()
+        if (category, message) in new_keys:
+            row.append("● ", style="bold magenta")
         row.append(severity_upper, style=color)
         row.append(f"  {category}  {message}")
         table.add_row(row)

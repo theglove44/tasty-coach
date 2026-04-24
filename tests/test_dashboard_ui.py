@@ -318,6 +318,21 @@ class TestRenderPanels(unittest.TestCase):
         rendered = _render_to_str(render_alerts_panel(data))
         self.assertIn("Market closed", rendered)
 
+    def test_render_alerts_panel_marks_new_with_dot(self):
+        alert = {"severity": "warn", "category": "bp", "message": "BP high"}
+        data = DashboardData(
+            risk={"alerts": [alert]},
+            new_alert_keys={("bp", "BP high")},
+        )
+        rendered = _render_to_str(render_alerts_panel(data))
+        self.assertIn("●", rendered)
+
+    def test_render_alerts_panel_no_dot_when_not_new(self):
+        alert = {"severity": "warn", "category": "bp", "message": "BP high"}
+        data = DashboardData(risk={"alerts": [alert]}, new_alert_keys=set())
+        rendered = _render_to_str(render_alerts_panel(data))
+        self.assertNotIn("●", rendered)
+
     def test_render_alerts_panel_truncation_title(self):
         alerts = [{"severity": "info", "category": f"cat{i}", "message": f"msg{i}"}
                   for i in range(10)]

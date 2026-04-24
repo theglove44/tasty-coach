@@ -67,6 +67,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
         help="Account number to use (e.g. 5WW46136). Alternatively set TASTY_ACCOUNT_NUMBER in .env",
     )
     parser.add_argument("--home", action="store_true", help="Unified account dashboard (portfolio, performance, risk).")
+    parser.add_argument("--alerts", nargs="?", const=50, type=int, default=None, metavar="N", help="Print last N persisted alerts (default 50) for the resolved account.")
     parser.add_argument("--timeline", action="store_true", help="Event timeline (assignments, exercises, opens/closes, rolls) for the active account.")
     parser.add_argument("--timeline-days", type=int, default=30, help="Lookback window for --timeline (default 30).")
     parser.add_argument("--timeline-symbol", type=str, default=None, help="Optional underlying filter for --timeline.")
@@ -259,6 +260,29 @@ async def async_main() -> int:
                 return 1
             from utils.dashboard_ui import run_account_dashboard
             return await run_account_dashboard(session, account_number=account_number)
+
+        if args.alerts is not None:
+            account_number = args.account or client.config.account_number
+            accounts = await client.get_accounts()
+            if not accounts:
+                print("❌ No linked accounts found for this session.")
+                return 1
+            if len(accounts) > 1 and not account_number:
+                print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
+                return 1
+            if not account_number:
+                account_number = getattr(accounts[0], "account_number", None)
+            if not account_number:
+                print("❌ Could not resolve an account number for --alerts.")
+                return 1
+            from utils.alert_store import AlertStore, print_alert_history
+            from utils.db import TradeDB
+            db = TradeDB()
+            try:
+                print_alert_history(AlertStore(db), account_number, limit=args.alerts)
+            finally:
+                db.close()
+            return 0
 
         if args.timeline:
             account_number = args.account or client.config.account_number
