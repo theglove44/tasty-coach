@@ -221,6 +221,7 @@ class LauncherUI:
             LauncherAction("6", "History report", "Performance over week/month/year", self._run_history_report),
             LauncherAction("7", "Review position", "Roll scenarios for a single symbol", self._run_review_position),
             LauncherAction("8", "List watchlists", "Show private and public watchlists", self._run_list_watchlists),
+            LauncherAction("d", "Account dashboard", "Unified portfolio, performance, and risk view", self._run_account_dashboard),
             LauncherAction("9", "Dashboard", "Open the market quality dashboard", self._run_dashboard),
             LauncherAction("a", "Switch account", "Pick a different linked account", self._switch_account),
             LauncherAction("q", "Quit", "Exit the launcher", self._quit, exit_on_run=True, shortcut="F10"),
@@ -548,6 +549,14 @@ class LauncherUI:
         for item in watchlists:
             if item["scope"] == "Public":
                 self.console.print(f"  • {item['name']}")
+
+    async def _run_account_dashboard(self) -> None:
+        """Launcher handler: invoke the unified account dashboard."""
+        from utils.dashboard_ui import run_account_dashboard
+        account_number = (
+            self.context.account_number if self.context else self.account_number
+        )
+        await run_account_dashboard(self.session, account_number=account_number)
 
     async def _run_dashboard(self) -> None:
         """Open the market quality dashboard."""

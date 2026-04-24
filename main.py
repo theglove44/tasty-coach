@@ -66,6 +66,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
         type=str,
         help="Account number to use (e.g. 5WW46136). Alternatively set TASTY_ACCOUNT_NUMBER in .env",
     )
+    parser.add_argument("--home", action="store_true", help="Unified account dashboard (portfolio, performance, risk).")
     parser.add_argument("--dashboard", action="store_true", help="Market Quality Dashboard (no account needed)")
     parser.add_argument("--html", action="store_true", help="Open dashboard in browser (use with --dashboard)")
     parser.add_argument("--research", metavar='SYMBOL', type=str, help="Research options chain for SYMBOL and output ranked trade ideas")
@@ -241,6 +242,20 @@ async def async_main() -> int:
                 default_threshold=args.threshold or client.config.ivr_threshold,
             )
             return await launcher.run()
+
+        if args.home:
+            account_number = args.account or client.config.account_number
+            accounts = await client.get_accounts()
+            if len(accounts) > 1 and not account_number:
+                print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
+                for a in accounts:
+                    acct_num = getattr(a, "account_number", "?")
+                    nickname = getattr(a, "nickname", "") or ""
+                    extra = f" ({nickname})" if nickname else ""
+                    print(f"  • {acct_num}{extra}")
+                return 1
+            from utils.dashboard_ui import run_account_dashboard
+            return await run_account_dashboard(session, account_number=account_number)
 
         if args.dashboard:
             from agents.dashboard import run_dashboard
