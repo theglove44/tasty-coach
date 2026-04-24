@@ -103,6 +103,26 @@ class TestDTEParser(unittest.TestCase):
         rendered = _render_to_str(render_performance_panel(data))
         self.assertIn("$42.50", rendered)
 
+    def test_render_positions_panel_shows_con_badge_for_correlation_bucket(self):
+        pos = types.SimpleNamespace(
+            symbol="SPY", quantity=1, quantity_direction="Long",
+            average_open_price=400, close_price=405, market_value=405,
+            underlying_symbol="SPY", instrument_type="Equity",
+        )
+        data = DashboardData(
+            positions=[pos],
+            nlv=Decimal("100000"),
+            risk={
+                "concentration": [],
+                "correlation_concentration": [
+                    {"bucket": "US_EQUITY_INDEX", "symbols": ["SPY", "QQQ"],
+                     "value": 20000.0, "pct_nlv": 0.2, "flagged": True},
+                ],
+            },
+        )
+        rendered = _render_to_str(render_positions_panel(data))
+        self.assertIn("CON", rendered)
+
     def test_render_positions_panel_detects_enum_instrument_type(self):
         from enum import Enum
 

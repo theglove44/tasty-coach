@@ -420,7 +420,16 @@ def render_positions_panel(data: DashboardData) -> Panel:
     if not data.positions:
         return Panel(Text(EM_DASH, justify="center"), title="Positions")
 
-    # Filter and sort by abs market value desc
+    flagged_underlyings: set = set()
+    if data.risk:
+        for row in data.risk.get("concentration", []) or []:
+            if row.get("flagged"):
+                flagged_underlyings.add(row.get("underlying"))
+        for bucket in data.risk.get("correlation_concentration", []) or []:
+            if bucket.get("flagged"):
+                for sym in bucket.get("symbols", []) or []:
+                    flagged_underlyings.add(sym)
+
     positions = data.positions
     positions_sorted = sorted(
         positions,
@@ -476,6 +485,10 @@ def render_positions_panel(data: DashboardData) -> Panel:
 
         if not flag and is_option and dte_val is not None and dte_val <= DTE_WARN_THRESHOLD:
             flag = "⚠"
+
+        underlying = _g(pos, "underlying_symbol", None) or symbol
+        if underlying in flagged_underlyings:
+            flag = f"{flag} CON".strip()
 
         table.add_row(
             symbol,

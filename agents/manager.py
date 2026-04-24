@@ -14,6 +14,7 @@ from tastytrade.instruments import get_option_chain
 from utils.market_schedule import MarketSchedule
 from agents.alerts import Alert, AlertCollector
 from utils.settings import settings
+from utils.correlation_buckets import group_by_bucket
 
 
 class RiskManager:
@@ -120,6 +121,8 @@ class RiskManager:
 
         marks_map = await self._fetch_marks(positions)
 
+        per_underlying_value: Dict[str, float] = {}
+
         option_positions: List[Any] = []
         occ_to_streamer: Dict[str, str] = {}
 
@@ -130,6 +133,9 @@ class RiskManager:
 
             market_value = abs(mark * qty * mult)
             trade_pct = (market_value / nlv) * 100 if nlv > 0 else Decimal(0)
+
+            root = getattr(pos, "underlying_symbol", None) or getattr(pos, "symbol", "UNKNOWN")
+            per_underlying_value[root] = per_underlying_value.get(root, 0.0) + float(market_value)
 
             if trade_pct > max_trade_pct:
                 warning_msg = f"{pos.symbol}: {trade_pct:.2f}% of NLV (Limit: {max_trade_pct_str}%)"
@@ -147,6 +153,10 @@ class RiskManager:
 
             if self._is_option(pos):
                 option_positions.append(pos)
+
+        concentration_result = self._analyze_concentration(
+            per_underlying_value, float(nlv), collector
+        )
 
         if option_positions:
             occ_to_streamer = await self._resolve_streamer_symbols(option_positions)
@@ -240,7 +250,87 @@ class RiskManager:
             "portfolio_theta": total_theta,
             "theta_status": theta_status,
             "alerts": collector.get_active_alerts(),
+            "concentration": concentration_result["by_underlying"],
+            "correlation_concentration": concentration_result["by_bucket"],
         }
+
+    def _analyze_concentration(
+        self,
+        per_underlying_value: Dict[str, float],
+        nlv: float,
+        alerts: AlertCollector,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Compute per-underlying + per-bucket concentration; emit 'concentration' alerts.
+
+        Never raises on zero NLV or empty input. All numeric values in the
+        returned lists are plain floats (JSON-safe).
+        """
+        raw_threshold = settings.get("concentration_pct_nlv_warn")
+        coerced = _coerce_decimal(raw_threshold)
+        if coerced is None:
+            self.logger.warning(
+                "Invalid concentration_pct_nlv_warn=%r; using default 0.15", raw_threshold
+            )
+            threshold = 0.15
+        else:
+            threshold = float(coerced)
+        by_underlying: List[Dict[str, Any]] = []
+        for sym, val in per_underlying_value.items():
+            pct = (val / nlv) if nlv > 0 else 0.0
+            flagged = pct >= threshold and nlv > 0
+            by_underlying.append({
+                "underlying": sym,
+                "value": float(val),
+                "pct_nlv": float(pct),
+                "flagged": flagged,
+            })
+            if flagged:
+                alerts.add(Alert(
+                    severity="warn",
+                    category="concentration",
+                    message=f"{sym} is {pct*100:.1f}% of NLV (threshold {threshold*100:.0f}%)",
+                    context={
+                        "underlying": sym,
+                        "value": float(val),
+                        "pct_nlv": float(pct),
+                        "threshold": float(threshold),
+                    },
+                ))
+        by_underlying.sort(key=lambda r: r["pct_nlv"], reverse=True)
+
+        grouped = group_by_bucket(((s, v) for s, v in per_underlying_value.items()))
+        by_bucket: List[Dict[str, Any]] = []
+        for bucket, pairs in grouped.items():
+            if len(pairs) < 2:
+                continue
+            total = sum(v for _, v in pairs)
+            pct = (total / nlv) if nlv > 0 else 0.0
+            flagged = pct >= threshold and nlv > 0
+            symbols = [s for s, _ in pairs]
+            by_bucket.append({
+                "bucket": bucket,
+                "symbols": symbols,
+                "value": float(total),
+                "pct_nlv": float(pct),
+                "flagged": flagged,
+            })
+            if flagged:
+                alerts.add(Alert(
+                    severity="warn",
+                    category="concentration",
+                    message=f"Correlation bucket {bucket} ({', '.join(symbols)}) "
+                            f"is {pct*100:.1f}% of NLV",
+                    context={
+                        "bucket": bucket,
+                        "symbols": list(symbols),
+                        "value": float(total),
+                        "pct_nlv": float(pct),
+                        "threshold": float(threshold),
+                    },
+                ))
+        by_bucket.sort(key=lambda r: r["pct_nlv"], reverse=True)
+
+        return {"by_underlying": by_underlying, "by_bucket": by_bucket}
 
     async def _resolve_streamer_symbols(self, positions: List[Any]) -> Dict[str, str]:
         """Map OCC position symbols to DXLink streamer symbols via option-chain lookup.
