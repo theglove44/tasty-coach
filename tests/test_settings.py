@@ -189,6 +189,30 @@ class TestSettingsSet(unittest.TestCase):
             saved = json.loads(p.read_text())
             self.assertEqual(saved["custom_key"], 42)
 
+    def test_set_rejects_nan(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            with self.assertRaises(ValueError):
+                s.set("bp_usage_warn", float("nan"))
+            with self.assertRaises(ValueError):
+                s.set("bp_usage_warn", "nan")
+
+    def test_set_rejects_infinity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            with self.assertRaises(ValueError):
+                s.set("position_pct_nlv_warn", float("inf"))
+            with self.assertRaises(ValueError):
+                s.set("position_pct_nlv_warn", "-inf")
+
+    def test_set_theta_target_rejects_nan_and_inf(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            with self.assertRaises(ValueError):
+                s.set("theta_target", float("nan"))
+            with self.assertRaises(ValueError):
+                s.set("theta_target", "inf")
+
     def test_set_alert_toggles_full_replace_preserves_other_categories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             s = Settings(config_path=Path(tmpdir) / "config.json")

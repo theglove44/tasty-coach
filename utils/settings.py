@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import copy
 import os
 from pathlib import Path
@@ -145,6 +146,8 @@ class Settings:
             f = float(value)
         except (TypeError, ValueError) as e:
             raise ValueError(f"{key}: not a number ({value!r})") from e
+        if not math.isfinite(f):
+            raise ValueError(f"{key}: must be finite (got {f})")
         if f < 0:
             raise ValueError(f"{key}: must be >= 0 (got {f})")
         return f

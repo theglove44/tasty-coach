@@ -192,7 +192,8 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
             pa = await PortfolioAgent(session, account_number=account_number).init()
             status = await pa.get_account_status()
             positions = await pa.get_positions()
-            return {"status": status, "positions": positions}
+            resolved = getattr(getattr(pa, "account", None), "account_number", None)
+            return {"status": status, "positions": positions, "resolved_account": resolved}
         except Exception as e:
             logger.error(f"Error fetching portfolio data: {e}")
             data.errors["portfolio"] = str(e)
@@ -233,9 +234,13 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
         data.errors["risk"] = str(risk_result)
 
     # Unpack portfolio
+    resolved_account_number = account_number
     if isinstance(portfolio_result, dict):
         data.account_status = portfolio_result.get("status")
         data.positions = portfolio_result.get("positions")
+        resolved_account_number = (
+            portfolio_result.get("resolved_account") or account_number
+        )
     elif isinstance(portfolio_result, Exception):
         data.errors["portfolio"] = str(portfolio_result)
 
@@ -263,16 +268,21 @@ async def gather_dashboard_data(session, account_number=None) -> DashboardData:
     # Persist alerts + compute "new since last view" markers. Ordering:
     # read last_viewed → persist current batch → compute new_keys from the
     # persisted rows (so first-seen alerts appear as new) → advance watermark.
-    if account_number and data.risk and data.risk.get("alerts"):
+    # Use the resolved account number (the one PortfolioAgent actually
+    # talked to) so single-account users without --account/env still get
+    # persistence.
+    if resolved_account_number and data.risk and data.risk.get("alerts"):
         try:
             from utils.alert_store import AlertStore
             from utils.db import TradeDB
             db = TradeDB()
             store = AlertStore(db)
-            last_viewed = store.get_last_viewed(account_number)
-            store.record_alerts(account_number, data.risk["alerts"])
-            data.new_alert_keys = store.new_alert_keys_since(account_number, last_viewed)
-            store.mark_viewed(account_number)
+            last_viewed = store.get_last_viewed(resolved_account_number)
+            store.record_alerts(resolved_account_number, data.risk["alerts"])
+            data.new_alert_keys = store.new_alert_keys_since(
+                resolved_account_number, last_viewed
+            )
+            store.mark_viewed(resolved_account_number)
             db.close()
         except Exception as e:
             logger.warning("alert persistence/markers failed: %s", e)
