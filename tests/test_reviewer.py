@@ -50,5 +50,85 @@ class TestReviewerAgent(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary, "BTO 25P / STO 30P / STO 45C / BTO 50C")
 
 
+class TestReviewerAdvisorIntegration(unittest.IsolatedAsyncioTestCase):
+    async def test_review_positions_populates_action_suggestion(self):
+        from datetime import date, timedelta
+        from agents.advisor import ActionSuggestion
+        from agents.reviewer import PositionContext
+
+        sentinel = ActionSuggestion(
+            action="hold", confidence="low", reason="test sentinel",
+        )
+
+        reviewer = ReviewerAgent(MagicMock())
+        reviewer.portfolio = MagicMock()
+
+        position_ctx = PositionContext(
+            underlying="X", current_price=100.0, legs=[],
+            strategy_type="Put Vertical", dte=30,
+            expiration=date.today() + timedelta(days=30),
+            total_quantity=1, entry_cost=-100.0,
+            current_value=50.0, unrealized_pl=10.0,
+        )
+
+        async def _fake_get_positions():
+            return [MagicMock()]
+        reviewer.portfolio.get_positions = _fake_get_positions
+        reviewer.portfolio._group_positions = MagicMock(return_value={
+            "X": [{"name": "Put Vertical", "legs": [MagicMock()]}]
+        })
+
+        async def _fake_fetch_ctx(legs, underlying):
+            return position_ctx
+        async def _fake_chain(underlying, exp):
+            return {"expirations": {}, "call_strikes": [], "put_strikes": []}
+        async def _fake_scenarios(ctx, chain):
+            return []
+
+        reviewer._fetch_position_context = _fake_fetch_ctx
+        reviewer._fetch_roll_chain_data = _fake_chain
+        reviewer._generate_roll_scenarios = _fake_scenarios
+
+        with patch("agents.reviewer.suggest_action", return_value=sentinel) as m:
+            results = await reviewer.review_positions()
+
+        self.assertEqual(len(results), 1)
+        self.assertIs(results[0].action_suggestion, sentinel)
+        m.assert_called_once()
+
+    def test_print_review_report_renders_suggestion_line(self):
+        from datetime import date, timedelta
+        from io import StringIO
+        from rich.console import Console
+        from agents.advisor import ActionSuggestion
+        from agents.reviewer import PositionContext, ReviewResult
+
+        position_ctx = PositionContext(
+            underlying="X", current_price=100.0, legs=[],
+            strategy_type="Put Vertical", dte=30,
+            expiration=date.today() + timedelta(days=30),
+            total_quantity=1, entry_cost=-100.0,
+            current_value=50.0, unrealized_pl=10.0,
+        )
+        result = ReviewResult(
+            position=position_ctx, roll_scenarios=[],
+            available_expirations=[], available_strikes={"calls": [], "puts": []},
+            metadata={},
+            action_suggestion=ActionSuggestion(
+                action="hold", confidence="low", reason="unit test reason",
+            ),
+        )
+
+        buf = StringIO()
+        with patch("agents.reviewer.Console", return_value=Console(file=buf, width=200, force_terminal=False)):
+            reviewer = ReviewerAgent(MagicMock())
+            reviewer.print_review_report([result])
+
+        output = buf.getvalue()
+        self.assertIn("Suggestion:", output)
+        self.assertIn("hold", output)
+        self.assertIn("unit test reason", output)
+
+
 if __name__ == "__main__":
     unittest.main()

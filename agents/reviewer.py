@@ -32,6 +32,7 @@ from utils.roll_calculator import (
     STRIKE_RANGE_PCT,
     MAX_EXPIRATIONS
 )
+from agents.advisor import ActionSuggestion, suggest_action
 
 
 @dataclass
@@ -58,6 +59,7 @@ class ReviewResult:
     available_expirations: List[date]
     available_strikes: Dict[str, List[float]]  # 'calls' and 'puts'
     metadata: Dict[str, Any]
+    action_suggestion: Optional[ActionSuggestion] = None
 
 
 class ReviewerAgent:
@@ -176,7 +178,8 @@ class ReviewerAgent:
                         metadata={
                             'reviewed_at': datetime.now().isoformat(),
                             'underlying_symbol': underlying
-                        }
+                        },
+                        action_suggestion=suggest_action(position_ctx, roll_scenarios),
                     )
 
                     results.append(result)
@@ -685,6 +688,13 @@ class ReviewerAgent:
 
             console.print(legs_table)
 
+            if result.action_suggestion:
+                s = result.action_suggestion
+                console.print(
+                    f"[bold]Suggestion:[/bold] {s.action} "
+                    f"([italic]{s.confidence}[/italic]) — {s.reason}"
+                )
+
             # Roll Scenarios
             if result.roll_scenarios:
                 scenarios_table = Table(title="Roll Scenarios (Sorted by Viability)", box=box.ROUNDED)
@@ -780,6 +790,15 @@ class ReviewerAgent:
                         "unrealized_pl": pos.unrealized_pl,
                         "legs": pos.legs
                     }
+                if result.action_suggestion:
+                    s = result.action_suggestion
+                    pos_dict["action_suggestion"] = {
+                        "action": s.action,
+                        "confidence": s.confidence,
+                        "reason": s.reason,
+                        "metrics": s.metrics,
+                    }
+
                 output["positions"].append(pos_dict)
 
                 # Underlying prices

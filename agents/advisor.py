@@ -6,10 +6,12 @@ recommendation plus a confidence label and plain-English reason.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
-from agents.reviewer import PositionContext
 from utils.roll_calculator import RollScenario
+
+if TYPE_CHECKING:
+    from agents.reviewer import PositionContext
 
 
 Action = Literal["hold", "close", "roll", "reduce", "let_expire"]
@@ -33,13 +35,13 @@ class ActionSuggestion:
     roll_scenarios: List[RollScenario] = field(default_factory=list)
 
 
-def _return_pct(position: PositionContext) -> float:
+def _return_pct(position: "PositionContext") -> float:
     """Signed return: +0.5 means +50% of entry credit/debit recovered."""
     denom = max(abs(float(position.entry_cost)), 1e-9)
     return float(position.unrealized_pl) / denom
 
 
-def _short_strike_under_test(position: PositionContext) -> Optional[float]:
+def _short_strike_under_test(position: "PositionContext") -> Optional[float]:
     """Short strike closest to current_price; None if no STO legs or invalid spot."""
     spot = position.current_price
     if spot is None or spot <= 0:
@@ -56,7 +58,7 @@ def _short_strike_under_test(position: PositionContext) -> Optional[float]:
     return min(sto_strikes, key=lambda k: abs(k - spot))
 
 
-def _assignment_proximity_pct(position: PositionContext) -> Optional[float]:
+def _assignment_proximity_pct(position: "PositionContext") -> Optional[float]:
     """|short_strike - spot| / spot, or None if missing."""
     k = _short_strike_under_test(position)
     spot = position.current_price
@@ -73,7 +75,7 @@ def _filter_viable(scenarios: Optional[List[RollScenario]]) -> List[RollScenario
 
 
 def suggest_action(
-    position: PositionContext,
+    position: "PositionContext",
     roll_scenarios: Optional[List[RollScenario]] = None,
 ) -> ActionSuggestion:
     """Run the decision tree and return an ActionSuggestion.
