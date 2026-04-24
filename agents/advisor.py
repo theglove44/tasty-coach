@@ -41,21 +41,37 @@ def _return_pct(position: "PositionContext") -> float:
     return float(position.unrealized_pl) / denom
 
 
-def _short_strike_under_test(position: "PositionContext") -> Optional[float]:
-    """Short strike closest to current_price; None if no STO legs or invalid spot."""
+def _short_leg_under_test(position: "PositionContext") -> Optional[Dict[str, Any]]:
+    """Short leg whose strike is closest to current_price.
+
+    Returns {'strike': float, 'option_type': 'CALL'|'PUT'} or None when there
+    are no STO legs or the spot is invalid. For multi-short strategies the
+    short nearest to spot is chosen.
+    """
     spot = position.current_price
     if spot is None or spot <= 0:
         return None
-    sto_strikes = []
+    candidates: List[Dict[str, Any]] = []
     for leg in position.legs:
-        if leg.get("action") == "STO" and leg.get("strike") is not None:
-            try:
-                sto_strikes.append(float(leg["strike"]))
-            except (TypeError, ValueError):
-                continue
-    if not sto_strikes:
+        if leg.get("action") != "STO":
+            continue
+        if leg.get("strike") is None:
+            continue
+        try:
+            strike = float(leg["strike"])
+        except (TypeError, ValueError):
+            continue
+        option_type = str(leg.get("option_type", "")).upper()
+        candidates.append({"strike": strike, "option_type": option_type})
+    if not candidates:
         return None
-    return min(sto_strikes, key=lambda k: abs(k - spot))
+    return min(candidates, key=lambda c: abs(c["strike"] - spot))
+
+
+def _short_strike_under_test(position: "PositionContext") -> Optional[float]:
+    """Short strike closest to current_price; None if no STO legs or invalid spot."""
+    leg = _short_leg_under_test(position)
+    return None if leg is None else leg["strike"]
 
 
 def _assignment_proximity_pct(position: "PositionContext") -> Optional[float]:
@@ -65,6 +81,27 @@ def _assignment_proximity_pct(position: "PositionContext") -> Optional[float]:
     if k is None or spot is None or spot <= 0:
         return None
     return abs(k - spot) / spot
+
+
+def _is_short_otm(leg: Optional[Dict[str, Any]], spot: float, buffer_pct: float) -> bool:
+    """True only when the short leg is demonstrably OTM by `buffer_pct`.
+
+    PUT is OTM when strike < spot; CALL is OTM when strike > spot. Requires
+    distance to exceed `buffer_pct` of spot so a strike within the
+    assignment-proximity band is never treated as safe to expire. Unknown
+    option_type returns False (fail-closed — never recommend let_expire
+    without a validated side).
+    """
+    if leg is None or spot is None or spot <= 0:
+        return False
+    option_type = leg.get("option_type")
+    strike = leg.get("strike")
+    if option_type not in ("PUT", "CALL") or strike is None:
+        return False
+    distance = (spot - strike) if option_type == "PUT" else (strike - spot)
+    if distance <= 0:
+        return False
+    return (distance / spot) > buffer_pct
 
 
 def _filter_viable(scenarios: Optional[List[RollScenario]]) -> List[RollScenario]:
@@ -115,17 +152,15 @@ def suggest_action(
         )
 
     if dte <= EXPIRE_DTE_THRESHOLD:
-        # let_expire requires a validated short strike that is clearly OTM.
-        # Without that context (long-only position, missing spot, or short strike
-        # within the assignment-proximity band), fall back to close.
-        if (
-            ret > 0
-            and prox is not None
-            and prox > ASSIGNMENT_PROXIMITY_PCT
-        ):
+        # let_expire requires the short leg to be OTM by side (PUT below spot,
+        # CALL above spot) and beyond the assignment-proximity band. A positive
+        # P/L alone is not sufficient — e.g. a short CALL can still be ITM on
+        # large initial credit.
+        short_leg = _short_leg_under_test(position)
+        if ret > 0 and _is_short_otm(short_leg, position.current_price, ASSIGNMENT_PROXIMITY_PCT):
             return ActionSuggestion(
                 action="let_expire", confidence="high",
-                reason=f"{dte} DTE, OTM, in profit — let expire.",
+                reason=f"{dte} DTE, short {short_leg['option_type']} OTM, in profit — let expire.",
                 metrics=metrics,
             )
         return ActionSuggestion(

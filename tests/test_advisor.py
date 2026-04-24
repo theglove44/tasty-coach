@@ -86,11 +86,54 @@ class TestAdvisor(unittest.TestCase):
         self.assertEqual(s.roll_scenarios, [])
 
     def test_near_expiration_in_profit_otm_lets_expire(self):
+        # Short PUT at 90, spot 100 -> OTM by 10% -> let_expire
         ctx = _make_ctx(dte=1, entry_cost=-100.0, unrealized_pl=10.0,
                         short_strikes=[90.0], spot=100.0)
         s = suggest_action(ctx)
         self.assertEqual(s.action, "let_expire")
         self.assertEqual(s.confidence, "high")
+
+    def test_near_expiration_short_call_itm_in_profit_closes_not_expires(self):
+        # Short CALL at 90 with spot=100 is ITM even though P/L may be positive
+        # from a large initial credit. Must NOT recommend let_expire.
+        legs = [{
+            "symbol": "X", "strike": 90.0, "option_type": "CALL",
+            "action": "STO", "quantity": 1, "avg_open_price": 15.0,
+            "mark": 11.0, "bid": 10.9, "ask": 11.1,
+            "current_value": 1100.0, "unrealized_pl": 400.0,
+        }]
+        from agents.reviewer import PositionContext
+        from datetime import date, timedelta
+        ctx = PositionContext(
+            underlying="X", current_price=100.0, legs=legs,
+            strategy_type="Short Call", dte=1,
+            expiration=date.today() + timedelta(days=1),
+            total_quantity=1, entry_cost=-1500.0,
+            current_value=-1100.0, unrealized_pl=400.0,
+        )
+        s = suggest_action(ctx)
+        self.assertEqual(s.action, "close")
+        self.assertEqual(s.confidence, "high")
+
+    def test_near_expiration_short_put_itm_in_profit_closes(self):
+        # Short PUT at 100 with spot=95 is ITM. Positive P/L must NOT trigger let_expire.
+        legs = [{
+            "symbol": "X", "strike": 100.0, "option_type": "PUT",
+            "action": "STO", "quantity": 1, "avg_open_price": 8.0,
+            "mark": 5.5, "bid": 5.4, "ask": 5.6,
+            "current_value": 550.0, "unrealized_pl": 250.0,
+        }]
+        from agents.reviewer import PositionContext
+        from datetime import date, timedelta
+        ctx = PositionContext(
+            underlying="X", current_price=95.0, legs=legs,
+            strategy_type="Short Put", dte=1,
+            expiration=date.today() + timedelta(days=1),
+            total_quantity=1, entry_cost=-800.0,
+            current_value=-550.0, unrealized_pl=250.0,
+        )
+        s = suggest_action(ctx)
+        self.assertEqual(s.action, "close")
 
     def test_near_expiration_losing_closes(self):
         ctx = _make_ctx(dte=1, entry_cost=-100.0, unrealized_pl=-30.0, spot=100.0)
