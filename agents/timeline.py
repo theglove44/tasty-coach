@@ -69,17 +69,25 @@ def classify_event(txn: Any) -> TimelineEvent:
     sub = str(_g(txn, "transaction_sub_type", "") or "")
     desc = str(_g(txn, "description", "") or "")
 
-    executed = _g(txn, "executed_at")
-    if isinstance(executed, datetime):
-        occurred_at = executed
-    else:
-        d = _g(txn, "transaction_date")
-        if isinstance(d, datetime):
-            occurred_at = d
-        elif isinstance(d, date):
-            occurred_at = datetime(d.year, d.month, d.day)
-        else:
-            occurred_at = datetime.min
+    def _as_datetime(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime(value.year, value.month, value.day)
+        if isinstance(value, str) and value:
+            try:
+                # Handle trailing Z (Python 3.11+ supports it, older don't)
+                s = value.replace("Z", "+00:00")
+                return datetime.fromisoformat(s)
+            except ValueError:
+                return None
+        return None
+
+    occurred_at = _as_datetime(_g(txn, "executed_at"))
+    if occurred_at is None:
+        occurred_at = _as_datetime(_g(txn, "transaction_date"))
+    if occurred_at is None:
+        occurred_at = datetime.min
 
     # Normalize to UTC-aware so sort() never crashes on mixed aware/naive inputs.
     if occurred_at.tzinfo is None:

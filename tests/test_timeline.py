@@ -1,7 +1,7 @@
 """Tests for agents/timeline.py classification + roll annotation + HistoryAgent integration."""
 
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -145,6 +145,36 @@ class TestClassifyEvent(unittest.TestCase):
         evt = classify_event(make_txn(executed_at=aware))
         self.assertEqual(evt.occurred_at.tzinfo, timezone.utc)
 
+    def test_classify_parses_iso_string_executed_at(self):
+        # DB-serialized transactions store executed_at as ISO strings.
+        evt = classify_event(make_txn(executed_at="2026-04-24T15:30:00+00:00"))
+        self.assertEqual(
+            evt.occurred_at,
+            datetime(2026, 4, 24, 15, 30, 0, tzinfo=timezone.utc),
+        )
+
+    def test_classify_parses_iso_string_with_z_suffix(self):
+        evt = classify_event(make_txn(executed_at="2026-04-24T10:00:00Z"))
+        self.assertEqual(
+            evt.occurred_at,
+            datetime(2026, 4, 24, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+    def test_classify_parses_iso_string_transaction_date_fallback(self):
+        evt = classify_event(
+            make_txn(executed_at=None, transaction_date="2026-04-24")
+        )
+        self.assertEqual(
+            evt.occurred_at,
+            datetime(2026, 4, 24, 0, 0, 0, tzinfo=timezone.utc),
+        )
+
+    def test_classify_invalid_iso_string_falls_back_to_min(self):
+        evt = classify_event(
+            make_txn(executed_at="not-a-date", transaction_date=None)
+        )
+        self.assertEqual(evt.occurred_at, datetime.min.replace(tzinfo=timezone.utc))
+
     def test_classify_mixed_aware_and_naive_are_all_utc(self):
         # Regression: sorting a mix of rows must not raise.
         e1 = classify_event(make_txn(executed_at=datetime(2026, 4, 24, 10)))
@@ -282,9 +312,18 @@ class TestAnnotateRolls(unittest.TestCase):
 
 
 class TestHistoryAgentGetRecentEvents(unittest.IsolatedAsyncioTestCase):
-    async def test_get_recent_events_returns_empty_when_no_transactions(self):
+    def _agent_with_history(self, history_result=None, history_side_effect=None):
         agent = HistoryAgent(MagicMock())
-        agent.get_transactions = AsyncMock(return_value=[])
+        mock_account = MagicMock()
+        if history_side_effect is not None:
+            mock_account.get_history.side_effect = history_side_effect
+        else:
+            mock_account.get_history.return_value = history_result or []
+        agent.account = mock_account
+        return agent
+
+    async def test_get_recent_events_returns_empty_when_no_transactions(self):
+        agent = self._agent_with_history([])
         result = await agent.get_recent_events(days=30, symbol=None)
         self.assertEqual(result, [])
 
@@ -293,8 +332,7 @@ class TestHistoryAgentGetRecentEvents(unittest.IsolatedAsyncioTestCase):
                          transaction_date=date(2026, 4, 20))
         newer = make_txn(id=2, executed_at=datetime(2026, 4, 24, 15),
                          transaction_date=date(2026, 4, 24))
-        agent = HistoryAgent(MagicMock())
-        agent.get_transactions = AsyncMock(return_value=[older, newer])
+        agent = self._agent_with_history([older, newer])
         result = await agent.get_recent_events(days=30)
         self.assertEqual(result[0].transaction_id, 2)
         self.assertEqual(result[1].transaction_id, 1)
@@ -302,27 +340,31 @@ class TestHistoryAgentGetRecentEvents(unittest.IsolatedAsyncioTestCase):
     async def test_get_recent_events_classifies_and_annotates(self):
         dt = datetime(2026, 4, 24, 10)
         close_txn = make_txn(id=1, order_id=500, transaction_sub_type="Sell to Close",
-                             executed_at=dt, transaction_date=date(2026, 4, 24),
-                             underlying_symbol="SPY")
+                             executed_at=dt, underlying_symbol="SPY")
         open_txn = make_txn(id=2, order_id=500, transaction_sub_type="Sell to Open",
-                            executed_at=dt, transaction_date=date(2026, 4, 24),
-                            underlying_symbol="SPY")
-        agent = HistoryAgent(MagicMock())
-        agent.get_transactions = AsyncMock(return_value=[close_txn, open_txn])
+                            executed_at=dt, underlying_symbol="SPY")
+        agent = self._agent_with_history([close_txn, open_txn])
         result = await agent.get_recent_events(days=30)
         self.assertEqual(len(result), 2)
         self.assertEqual(sum(1 for e in result if e.is_roll_leg), 2)
 
     async def test_get_recent_events_forwards_days_and_symbol(self):
-        agent = HistoryAgent(MagicMock())
-        agent.get_transactions = AsyncMock(return_value=[])
+        agent = self._agent_with_history([])
         await agent.get_recent_events(days=60, symbol="QQQ")
-        agent.get_transactions.assert_called_once_with(days=60, symbol="QQQ")
+        call = agent.account.get_history.call_args
+        self.assertEqual(call.kwargs["underlying_symbol"], "QQQ")
+        # start_date should be 60 days ago
+        self.assertEqual(call.kwargs["start_date"], date.today() - timedelta(days=60))
 
-    async def test_get_recent_events_propagates_exceptions(self):
-        agent = HistoryAgent(MagicMock())
-        agent.get_transactions = AsyncMock(side_effect=ValueError("boom"))
+    async def test_get_recent_events_propagates_sdk_exceptions(self):
+        agent = self._agent_with_history(history_side_effect=ValueError("boom"))
         with self.assertRaises(ValueError):
+            await agent.get_recent_events(days=30)
+
+    async def test_get_recent_events_raises_when_no_account(self):
+        agent = HistoryAgent(MagicMock())
+        agent.account = None
+        with self.assertRaises(RuntimeError):
             await agent.get_recent_events(days=30)
 
 
