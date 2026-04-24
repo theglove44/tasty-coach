@@ -2,7 +2,7 @@
 
 import logging
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List, Dict, Any, Optional
 
 from tastytrade import Session, Account
@@ -27,6 +27,7 @@ class RiskManager:
         self.market_schedule = MarketSchedule(session)
 
     async def _get_account(self) -> Account:
+        """Resolve and cache the target Account (by account_number if set, else first)."""
         if self.account:
             return self.account
         accounts = Account.get(self.session)
@@ -43,6 +44,7 @@ class RiskManager:
         return self.account
 
     def _is_option(self, pos) -> bool:
+        """Return True if the position is an equity option (enum-safe check)."""
         inst_type = getattr(pos, "instrument_type", None)
         if inst_type is None:
             return False
@@ -50,6 +52,11 @@ class RiskManager:
         return "Equity Option" == type_str
 
     async def _fetch_marks(self, positions: List[Any]) -> Dict[str, float]:
+        """Fetch live marks per symbol via the market-data-by-type endpoint.
+
+        Position objects don't carry a mark field, so we split by instrument type
+        and batch option requests (batch_size=50) to stay under URI limits.
+        """
         marks: Dict[str, float] = {}
         equity_syms = []
         option_syms = []
@@ -75,6 +82,7 @@ class RiskManager:
         return marks
 
     async def calculate_portfolio_risk(self) -> Dict[str, Any]:
+        """Compute NLV / BP / Δ / Θ snapshot and emit structured alerts alongside legacy string warnings."""
         account = await self._get_account()
         balances = account.get_balances(self.session)
         positions = account.get_positions(self.session)
@@ -86,9 +94,15 @@ class RiskManager:
         bp_usage_pct = (bp_used / nlv) * 100 if nlv > 0 else Decimal(0)
 
         collector = AlertCollector()
-        pos_pct_warn = Decimal(str(settings.get("position_pct_nlv_warn")))
-        bp_warn = Decimal(str(settings.get("bp_usage_warn")))
+        pos_pct_warn = _decimal_setting("position_pct_nlv_warn", Decimal("0.05"))
+        bp_warn = _decimal_setting("bp_usage_warn", Decimal("0.50"))
         theta_target_cfg = settings.get("theta_target")
+        if theta_target_cfg is not None and _coerce_decimal(theta_target_cfg) is None:
+            self.logger.warning(
+                "Invalid theta_target setting %r; falling back to default band",
+                theta_target_cfg,
+            )
+            theta_target_cfg = None
 
         session_warnings: List[str] = []
         if not self.market_schedule.is_market_open():
@@ -229,6 +243,12 @@ class RiskManager:
         }
 
     async def _resolve_streamer_symbols(self, positions: List[Any]) -> Dict[str, str]:
+        """Map OCC position symbols to DXLink streamer symbols via option-chain lookup.
+
+        DXLink uses streamer-symbol format (e.g. .SPY250321P500) while positions use
+        OCC symbols (e.g. SPY   250321P00500000). Groups lookups by underlying to
+        minimize API calls.
+        """
         occ_to_streamer: Dict[str, str] = {}
         by_underlying: Dict[str, List[str]] = {}
         for pos in positions:
@@ -249,6 +269,11 @@ class RiskManager:
         return occ_to_streamer
 
     async def _fetch_greeks(self, symbols: List[str]) -> Dict[str, Greeks]:
+        """Snapshot greeks for the given streamer symbols with a 5s hard timeout.
+
+        Args:
+            symbols: DXLink streamer symbols (not OCC symbols).
+        """
         if not symbols:
             return {}
         results: Dict[str, Greeks] = {}
@@ -278,9 +303,30 @@ class RiskManager:
 
 
 def extract_decimal(value):
-    """Helper to ensure we have a Decimal or 0."""
+    """Coerce a numeric-ish value to Decimal, returning Decimal(0) for None."""
     if value is None:
         return Decimal(0)
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _coerce_decimal(value: Any) -> Optional[Decimal]:
+    """Return Decimal(value) or None if value is not a valid numeric literal."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _decimal_setting(key: str, default: Decimal) -> Decimal:
+    """Read a numeric setting as Decimal, falling back to default on missing/invalid values."""
+    result = _coerce_decimal(settings.get(key))
+    if result is None:
+        logging.getLogger(__name__).warning(
+            "Invalid setting %s=%r; using default %s", key, settings.get(key), default
+        )
+        return default
+    return result

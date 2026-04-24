@@ -124,5 +124,38 @@ class TestSettings(unittest.TestCase):
         self.assertIsInstance(settings, Settings)
 
 
+class TestDecimalSettingFallback(unittest.TestCase):
+    """Covers agents.manager._decimal_setting / _coerce_decimal safety net."""
+
+    def test_coerce_handles_none_and_non_numeric(self):
+        from agents.manager import _coerce_decimal
+        self.assertIsNone(_coerce_decimal(None))
+        self.assertIsNone(_coerce_decimal("not-a-number"))
+        self.assertIsNone(_coerce_decimal(True))
+
+    def test_decimal_setting_falls_back_on_bad_value(self):
+        import json as _json
+        from decimal import Decimal
+        from agents.manager import _decimal_setting
+        from utils.settings import Settings
+        import utils.settings as settings_mod
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(_json.dumps({"position_pct_nlv_warn": "oops"}))
+            s = Settings(config_path=config_path)
+            original = settings_mod.settings
+            try:
+                settings_mod.settings = s
+                import agents.manager as manager_mod
+                manager_mod.settings = s
+                with self.assertLogs("agents.manager", level="WARNING"):
+                    result = _decimal_setting("position_pct_nlv_warn", Decimal("0.05"))
+                self.assertEqual(result, Decimal("0.05"))
+            finally:
+                settings_mod.settings = original
+                import agents.manager as manager_mod
+                manager_mod.settings = original
+
+
 if __name__ == "__main__":
     unittest.main()
