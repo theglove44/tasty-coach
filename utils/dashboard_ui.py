@@ -457,9 +457,8 @@ def render_positions_panel(data: DashboardData) -> Panel:
         mark = _g(pos, "close_price")
         mkt_val = _g(pos, "market_value")
         instr_type = _g(pos, "instrument_type", "")
-
-        # Check if option
-        is_option = "Option" in str(instr_type)
+        instr_type_str = getattr(instr_type, "value", None) or str(instr_type)
+        is_option = "Option" in instr_type_str
 
         # Calculate DTE
         dte_val = _dte_from_occ(symbol) if is_option else None

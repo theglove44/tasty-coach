@@ -244,11 +244,18 @@ async def async_main() -> int:
             return await launcher.run()
 
         if args.home:
+            account_number = args.account or client.config.account_number
+            accounts = await client.get_accounts()
+            if len(accounts) > 1 and not account_number:
+                print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
+                for a in accounts:
+                    acct_num = getattr(a, "account_number", "?")
+                    nickname = getattr(a, "nickname", "") or ""
+                    extra = f" ({nickname})" if nickname else ""
+                    print(f"  • {acct_num}{extra}")
+                return 1
             from utils.dashboard_ui import run_account_dashboard
-            return await run_account_dashboard(
-                session,
-                account_number=args.account or client.config.account_number,
-            )
+            return await run_account_dashboard(session, account_number=account_number)
 
         if args.dashboard:
             from agents.dashboard import run_dashboard

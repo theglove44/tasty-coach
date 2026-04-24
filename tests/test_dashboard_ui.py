@@ -103,6 +103,25 @@ class TestDTEParser(unittest.TestCase):
         rendered = _render_to_str(render_performance_panel(data))
         self.assertIn("$42.50", rendered)
 
+    def test_render_positions_panel_detects_enum_instrument_type(self):
+        from enum import Enum
+
+        class _FakeInstr(Enum):
+            EQUITY_OPTION = "Equity Option"
+
+        fixed_today = date(2026, 4, 24)
+        exp_date = fixed_today + timedelta(days=5)
+        yymmdd = f"{exp_date.year % 100:02d}{exp_date.month:02d}{exp_date.day:02d}"
+        symbol = f"SPY  {yymmdd}C00500000"
+        pos = types.SimpleNamespace(
+            symbol=symbol, quantity=1, quantity_direction="Short",
+            average_open_price=1.50, close_price=1.25, market_value=-125,
+            underlying_symbol="SPY", instrument_type=_FakeInstr.EQUITY_OPTION,
+        )
+        data = DashboardData(positions=[pos], nlv=Decimal("100000"))
+        rendered = _render_to_str(render_positions_panel(data))
+        self.assertIn("⚠", rendered)
+
 
 class TestRenderPanels(unittest.TestCase):
     """Test panel rendering functions."""
