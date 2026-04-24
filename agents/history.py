@@ -19,6 +19,7 @@ from tastytrade.utils import today_in_new_york
 
 from utils.db import TradeDB
 from utils.trade_grouper import TradeGrouper
+from agents.timeline import TimelineEvent, classify_event, annotate_rolls
 
 EXTERNAL_FLOW_SUBTYPES = {
     "ACAT",
@@ -419,6 +420,35 @@ class HistoryAgent:
         except Exception as e:
             self.logger.error(f"Error fetching orders: {e}")
             return []
+
+    async def get_recent_events(
+        self,
+        days: int = 30,
+        symbol: Optional[str] = None,
+    ) -> List[TimelineEvent]:
+        """Fetch recent transactions and return classified, roll-annotated TimelineEvents.
+
+        Returns events sorted newest-first. Empty list if no transactions.
+        Unlike get_transactions(), this method DOES NOT swallow SDK errors —
+        callers (e.g. --timeline) need to distinguish "no events" from "fetch
+        failed" so outages/auth errors surface instead of masquerading as an
+        empty timeline. Raises whatever the SDK raises.
+        """
+        if not self.account:
+            raise RuntimeError("HistoryAgent has no resolved account; call init() first.")
+        start = date.today() - timedelta(days=days)
+        txns = self.account.get_history(
+            self.session,
+            page_offset=None,
+            sort="Desc",
+            start_date=start,
+            type=None,
+            underlying_symbol=symbol,
+        )
+        events = [classify_event(t) for t in txns]
+        events = annotate_rolls(events)
+        events.sort(key=lambda e: e.occurred_at, reverse=True)
+        return events
 
     def print_transactions(
         self, transactions: List[Transaction], discord: bool = False

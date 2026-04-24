@@ -222,6 +222,7 @@ class LauncherUI:
             LauncherAction("7", "Review position", "Roll scenarios for a single symbol", self._run_review_position),
             LauncherAction("8", "List watchlists", "Show private and public watchlists", self._run_list_watchlists),
             LauncherAction("d", "Account dashboard", "Unified portfolio, performance, and risk view", self._run_account_dashboard),
+            LauncherAction("t", "Event timeline", "Recent fills, assignments, exercises, and rolls", self._run_event_timeline),
             LauncherAction("9", "Dashboard", "Open the market quality dashboard", self._run_dashboard),
             LauncherAction("a", "Switch account", "Pick a different linked account", self._switch_account),
             LauncherAction("q", "Quit", "Exit the launcher", self._quit, exit_on_run=True, shortcut="F10"),
@@ -557,6 +558,23 @@ class LauncherUI:
             self.context.account_number if self.context else self.account_number
         )
         await run_account_dashboard(self.session, account_number=account_number)
+
+    async def _run_event_timeline(self) -> None:
+        """Launcher handler: render event timeline for the active account."""
+        from utils.timeline_ui import run_timeline
+        account_number = (
+            self.context.account_number if self.context else self.account_number
+        )
+        if not account_number:
+            self.console.print("[red]No active account.[/red]")
+            return
+        await run_timeline(
+            session=self.session,
+            account_number=account_number,
+            days=30,
+            symbol=None,
+            console=self.console,
+        )
 
     async def _run_dashboard(self) -> None:
         """Open the market quality dashboard."""

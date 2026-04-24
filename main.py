@@ -67,6 +67,9 @@ def setup_argument_parser() -> argparse.ArgumentParser:
         help="Account number to use (e.g. 5WW46136). Alternatively set TASTY_ACCOUNT_NUMBER in .env",
     )
     parser.add_argument("--home", action="store_true", help="Unified account dashboard (portfolio, performance, risk).")
+    parser.add_argument("--timeline", action="store_true", help="Event timeline (assignments, exercises, opens/closes, rolls) for the active account.")
+    parser.add_argument("--timeline-days", type=int, default=30, help="Lookback window for --timeline (default 30).")
+    parser.add_argument("--timeline-symbol", type=str, default=None, help="Optional underlying filter for --timeline.")
     parser.add_argument("--dashboard", action="store_true", help="Market Quality Dashboard (no account needed)")
     parser.add_argument("--html", action="store_true", help="Open dashboard in browser (use with --dashboard)")
     parser.add_argument("--research", metavar='SYMBOL', type=str, help="Research options chain for SYMBOL and output ranked trade ideas")
@@ -256,6 +259,33 @@ async def async_main() -> int:
                 return 1
             from utils.dashboard_ui import run_account_dashboard
             return await run_account_dashboard(session, account_number=account_number)
+
+        if args.timeline:
+            account_number = args.account or client.config.account_number
+            accounts = await client.get_accounts()
+            if not accounts:
+                print("❌ No linked accounts found for this session.")
+                return 1
+            if len(accounts) > 1 and not account_number:
+                print("❌ Multiple accounts found. Please set TASTY_ACCOUNT_NUMBER in .env or pass --account.")
+                for a in accounts:
+                    acct_num = getattr(a, "account_number", "?")
+                    nickname = getattr(a, "nickname", "") or ""
+                    extra = f" ({nickname})" if nickname else ""
+                    print(f"  • {acct_num}{extra}")
+                return 1
+            if not account_number:
+                account_number = getattr(accounts[0], "account_number", None)
+            if not account_number:
+                print("❌ Could not resolve an account number for --timeline.")
+                return 1
+            from utils.timeline_ui import run_timeline
+            return await run_timeline(
+                session=session,
+                account_number=account_number,
+                days=args.timeline_days,
+                symbol=args.timeline_symbol,
+            )
 
         if args.dashboard:
             from agents.dashboard import run_dashboard
