@@ -124,6 +124,93 @@ class TestSettings(unittest.TestCase):
         self.assertIsInstance(settings, Settings)
 
 
+class TestSettingsSet(unittest.TestCase):
+    def test_set_updates_numeric_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "config.json"
+            s = Settings(config_path=p)
+            s.set("position_pct_nlv_warn", 0.10)
+            self.assertEqual(s.get("position_pct_nlv_warn"), 0.10)
+            reloaded = Settings(config_path=p)
+            self.assertEqual(reloaded.get("position_pct_nlv_warn"), 0.10)
+
+    def test_set_rejects_unknown_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "config.json"
+            s = Settings(config_path=p)
+            s.get("bp_usage_warn")  # force load
+            before = p.read_text()
+            with self.assertRaises(ValueError):
+                s.set("nope", 1)
+            self.assertEqual(p.read_text(), before)
+
+    def test_set_rejects_negative_numeric(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            with self.assertRaises(ValueError):
+                s.set("bp_usage_warn", -0.1)
+
+    def test_set_coerces_string_numeric(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("concentration_pct_nlv_warn", "0.33")
+            self.assertEqual(s.get("concentration_pct_nlv_warn"), 0.33)
+
+    def test_set_nested_alert_toggle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "config.json"
+            s = Settings(config_path=p)
+            s.set("alert_toggles.bp", False)
+            toggles = s.get("alert_toggles")
+            self.assertFalse(toggles["bp"])
+            self.assertTrue(toggles["position_size"])
+            self.assertTrue(toggles["theta"])
+
+    def test_set_many_atomic_on_validation_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "config.json"
+            s = Settings(config_path=p)
+            s.get("bp_usage_warn")
+            before = p.read_text()
+            with self.assertRaises(ValueError):
+                s.set_many({"bp_usage_warn": 0.40, "bogus_key": 1})
+            self.assertEqual(p.read_text(), before)
+            self.assertEqual(s.get("bp_usage_warn"), DEFAULTS["bp_usage_warn"])
+
+    def test_set_preserves_unknown_user_keys(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = Path(tmpdir) / "config.json"
+            p.write_text(json.dumps({
+                "position_pct_nlv_warn": 0.05,
+                "custom_key": 42,
+            }))
+            s = Settings(config_path=p)
+            s.set("position_pct_nlv_warn", 0.08)
+            saved = json.loads(p.read_text())
+            self.assertEqual(saved["custom_key"], 42)
+
+    def test_set_alert_toggles_full_replace_preserves_other_categories(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("alert_toggles", {"bp": False})
+            toggles = s.get("alert_toggles")
+            self.assertFalse(toggles["bp"])
+            # All other default categories must still be present
+            for cat in ("position_size", "theta", "market", "concentration", "assignment"):
+                self.assertIn(cat, toggles)
+                self.assertTrue(toggles[cat])
+
+    def test_set_theta_target_accepts_none_and_numeric(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("theta_target", None)
+            self.assertIsNone(s.get("theta_target"))
+            s.set("theta_target", 0.002)
+            self.assertEqual(s.get("theta_target"), 0.002)
+            s.set("theta_target", "")
+            self.assertIsNone(s.get("theta_target"))
+
+
 class TestDecimalSettingFallback(unittest.TestCase):
     """Covers agents.manager._decimal_setting / _coerce_decimal safety net."""
 

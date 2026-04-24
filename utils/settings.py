@@ -3,8 +3,19 @@
 import json
 import logging
 import copy
+import os
 from pathlib import Path
 from typing import Any
+
+NUMERIC_KEYS: frozenset[str] = frozenset({
+    "position_pct_nlv_warn",
+    "bp_usage_warn",
+    "bp_usage_block",
+    "concentration_pct_nlv_warn",
+})
+OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
+    "theta_target",  # may be None
+})
 
 DEFAULTS: dict[str, Any] = {
     "position_pct_nlv_warn": 0.05,
@@ -76,6 +87,94 @@ class Settings:
     def reload(self) -> None:
         """Force reload from disk."""
         self._data = None
+
+    def set(self, key: str, value: Any) -> None:
+        """Validate and persist a single setting. See set_many for details."""
+        self.set_many({key: value})
+
+    def set_many(self, updates: dict[str, Any]) -> None:
+        """Validate all updates, then write once atomically.
+
+        Supports dotted keys under `alert_toggles.*`. Raises ValueError on
+        any invalid entry and writes nothing; on success the new values are
+        persisted to disk and reflected in-memory.
+        """
+        if self._data is None:
+            self._data = self._load()
+        merged = copy.deepcopy(self._data)
+        for key, raw in updates.items():
+            coerced = self._validate_value(key, raw)
+            self._apply_dotted(merged, key, coerced)
+        self._atomic_write(merged)
+        self._data = merged
+
+    def _validate_value(self, key: str, value: Any) -> Any:
+        """Coerce and validate a single key's value."""
+        if key.startswith("alert_toggles."):
+            return self._coerce_bool(key, value)
+        if key == "alert_toggles":
+            if not isinstance(value, dict):
+                raise ValueError("alert_toggles must be a dict of bools")
+            coerced = {k: self._coerce_bool(f"alert_toggles.{k}", v) for k, v in value.items()}
+            existing = (self._data or {}).get("alert_toggles") or {}
+            return {**DEFAULTS["alert_toggles"], **existing, **coerced}
+        if key in OPTIONAL_NUMERIC_KEYS:
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                return None
+            return self._coerce_nonneg_float(key, value)
+        if key in NUMERIC_KEYS:
+            return self._coerce_nonneg_float(key, value)
+        if key in DEFAULTS:
+            # Unknown behavior for non-numeric keys in DEFAULTS — pass through
+            return value
+        raise ValueError(f"unknown setting: {key!r}")
+
+    @staticmethod
+    def _coerce_bool(key: str, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str) and value.lower() in ("true", "false", "1", "0", "yes", "no"):
+            return value.lower() in ("true", "1", "yes")
+        raise ValueError(f"{key}: expected a boolean, got {value!r}")
+
+    @staticmethod
+    def _coerce_nonneg_float(key: str, value: Any) -> float:
+        try:
+            f = float(value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{key}: not a number ({value!r})") from e
+        if f < 0:
+            raise ValueError(f"{key}: must be >= 0 (got {f})")
+        return f
+
+    @staticmethod
+    def _apply_dotted(d: dict, dotted_key: str, value: Any) -> None:
+        if "." not in dotted_key:
+            d[dotted_key] = value
+            return
+        head, _, tail = dotted_key.partition(".")
+        sub = d.get(head)
+        if not isinstance(sub, dict):
+            sub = {}
+            d[head] = sub
+        Settings._apply_dotted(sub, tail, value)
+
+    def _atomic_write(self, merged: dict[str, Any]) -> None:
+        """Write merged dict to <path>.tmp then os.rename to config_path."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        try:
+            tmp.write_text(json.dumps(merged, indent=2))
+            os.replace(tmp, self.config_path)
+        except OSError:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+            raise
 
 
 settings = Settings()
