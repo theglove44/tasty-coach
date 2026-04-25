@@ -79,6 +79,9 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-credit-ratio", type=float, default=None, help="Minimum credit as fraction of spread width (default: 0.25)")
     parser.add_argument("--min-delta", type=float, default=None, help="Minimum absolute short delta (default: 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Maximum absolute short delta (default: 0.45)")
+    parser.add_argument("--best-trades", action="store_true", help="Rank best trade ideas across watchlists")
+    parser.add_argument("--top", type=int, default=3, help="Number of top ideas to surface (use with --best-trades, default: 3)")
+    parser.add_argument("--bt-watchlist", action="append", dest="bt_watchlist", metavar="NAME", help="Watchlist to include in --best-trades (repeatable; defaults: Chris Historical Trades, High Options Volume)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
     return parser
@@ -246,6 +249,23 @@ async def async_main() -> int:
                 default_threshold=args.threshold or client.config.ivr_threshold,
             )
             return await launcher.run()
+
+        if args.best_trades:
+            from agents.trade_ranker import run_best_trades, _print_best_trades_text
+
+            result = await run_best_trades(
+                session,
+                watchlists=args.bt_watchlist,
+                top=args.top,
+                output_format=args.format,
+            )
+
+            if args.format == "json":
+                print(json.dumps(result, indent=2, default=str))
+            else:
+                _print_best_trades_text(result, args.top)
+
+            return 0
 
         if args.home:
             account_number = args.account or client.config.account_number
