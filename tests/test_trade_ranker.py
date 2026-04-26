@@ -3,6 +3,7 @@
 import unittest
 from datetime import date
 from decimal import Decimal
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.trade_ranker import (
@@ -10,6 +11,12 @@ from agents.trade_ranker import (
     Rejection,
     SymbolContext,
     _build_context,
+    _check_broken_pricing,
+    _check_dte_bounds,
+    _check_earnings_blackout,
+    _check_open_interest,
+    _check_spread,
+    apply_quality_gates,
     generate_candidates,
     scan_watchlists,
 )
@@ -304,6 +311,50 @@ def _make_failure_report(symbol="AAPL", status="NO_CHAIN", warnings=None):
     }
 
 
+def _make_candidate(
+    *,
+    symbol: str = "AAPL",
+    structure: str = "BULL_PUT_SPREAD",
+    expiration: date = date(2026, 6, 19),
+    dte: int = 45,
+    width: float = 5.0,
+    credit: float = 1.5,
+    max_loss: float = 350.0,
+    credit_pct_of_width: float = 0.30,
+    short_delta: float = 0.30,
+    pop_estimate: float = 0.65,
+    breakevens: Optional[list] = None,
+    net_greeks: Optional[dict] = None,
+    legs: Optional[list] = None,
+    researcher_score: float = 72.0,
+    researcher_score_breakdown: Optional[dict] = None,
+    next_earnings_date: Optional[date] = None,
+) -> Candidate:
+    ctx = SymbolContext(symbol=symbol, next_earnings_date=next_earnings_date)
+    default_legs = [
+        {"action": "SELL", "bid": 1.50, "ask": 1.55, "mid": 1.525, "open_interest": 500},
+        {"action": "BUY", "bid": 0.40, "ask": 0.42, "mid": 0.41, "open_interest": 500},
+    ]
+    return Candidate(
+        symbol=symbol,
+        structure=structure,
+        expiration=expiration,
+        dte=dte,
+        width=width,
+        credit=credit,
+        max_loss=max_loss,
+        credit_pct_of_width=credit_pct_of_width,
+        short_delta=short_delta,
+        pop_estimate=pop_estimate,
+        breakevens=breakevens if breakevens is not None else [148.5],
+        net_greeks=net_greeks if net_greeks is not None else {"delta": 0.05, "gamma": 0.001, "theta": 0.20, "vega": -0.15},
+        legs=legs if legs is not None else default_legs,
+        researcher_score=researcher_score,
+        researcher_score_breakdown=researcher_score_breakdown if researcher_score_breakdown is not None else {"raw": {}},
+        context=ctx,
+    )
+
+
 class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
     """Tests for generate_candidates orchestration."""
 
@@ -436,6 +487,147 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(c.net_greeks, {})
         self.assertEqual(c.legs, [])
         self.assertEqual(c.researcher_score_breakdown, {})
+
+
+class TestQualityGates(unittest.TestCase):
+    """Tests for apply_quality_gates and individual _check_* helpers."""
+
+    DEFAULT_KW = dict(
+        blackout_days=7,
+        min_dte=21,
+        max_dte=60,
+        min_open_interest=200,
+        max_spread_pct=0.10,
+        today=date(2026, 4, 26),
+    )
+
+    def test_passing_candidate_survives_all_gates(self):
+        c = _make_candidate()
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [c])
+        self.assertEqual(rejections, [])
+
+    def test_earnings_within_blackout_rejected(self):
+        c = _make_candidate(next_earnings_date=date(2026, 5, 1))
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].reason, "earnings_blackout")
+        self.assertEqual(rejections[0].detail, "earnings 2026-05-01 within 7d window")
+
+    def test_earnings_outside_blackout_passes(self):
+        c = _make_candidate(next_earnings_date=date(2026, 5, 15))
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [c])
+        self.assertEqual(rejections, [])
+
+    def test_no_earnings_data_skips_gate(self):
+        c = _make_candidate(next_earnings_date=None)
+        self.assertIsNone(_check_earnings_blackout(c, 7, date(2026, 4, 26)))
+
+    def test_dte_below_min_rejected(self):
+        c = _make_candidate(dte=12)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections[0].reason, "dte_out_of_range")
+        self.assertEqual(rejections[0].detail, "dte=12 below min=21")
+
+    def test_dte_above_max_rejected(self):
+        c = _make_candidate(dte=70)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections[0].reason, "dte_out_of_range")
+        self.assertEqual(rejections[0].detail, "dte=70 above max=60")
+
+    def test_dte_in_range_passes(self):
+        c = _make_candidate(dte=45)
+        passing, _ = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [c])
+
+    def test_zero_credit_rejected(self):
+        c = _make_candidate(credit=0.0)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections[0].reason, "broken_pricing")
+        self.assertEqual(rejections[0].detail, "credit=0.0")
+
+    def test_sell_leg_zero_bid_rejected(self):
+        legs = [
+            {"action": "SELL", "bid": 0.0, "ask": 0.05, "mid": 0.025, "open_interest": 500},
+            {"action": "BUY", "bid": 0.40, "ask": 0.42, "mid": 0.41, "open_interest": 500},
+        ]
+        c = _make_candidate(legs=legs)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections[0].reason, "broken_pricing")
+        self.assertEqual(rejections[0].detail, "sell-leg bid=0.0")
+
+    def test_buy_leg_zero_bid_does_not_reject(self):
+        legs = [
+            {"action": "SELL", "bid": 1.50, "ask": 1.55, "mid": 1.525, "open_interest": 500},
+            {"action": "BUY", "bid": 0.0, "ask": 0.05, "mid": 0.025, "open_interest": 500},
+        ]
+        c = _make_candidate(legs=legs)
+        self.assertIsNone(_check_broken_pricing(c))
+
+    def test_low_open_interest_rejected(self):
+        legs = [
+            {"action": "SELL", "bid": 1.50, "ask": 1.55, "mid": 1.525, "open_interest": 150},
+            {"action": "BUY", "bid": 0.40, "ask": 0.42, "mid": 0.41, "open_interest": 500},
+        ]
+        c = _make_candidate(legs=legs)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections[0].reason, "low_open_interest")
+        self.assertEqual(rejections[0].detail, "min OI 150 below floor 200")
+
+    def test_all_oi_none_does_not_reject(self):
+        legs = [
+            {"action": "SELL", "bid": 1.50, "ask": 1.55, "mid": 1.525, "open_interest": None},
+            {"action": "BUY", "bid": 0.40, "ask": 0.45, "mid": 0.425, "open_interest": None},
+        ]
+        c = _make_candidate(legs=legs)
+        self.assertIsNone(_check_open_interest(c, 200))
+
+    def test_wide_spread_rejected(self):
+        legs = [
+            {"action": "SELL", "bid": 1.40, "ask": 1.70, "mid": 1.55, "open_interest": 500},
+            {"action": "BUY", "bid": 0.40, "ask": 0.42, "mid": 0.41, "open_interest": 500},
+        ]
+        c = _make_candidate(legs=legs)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections[0].reason, "wide_spread")
+        self.assertEqual(rejections[0].detail, "max spread 0.194 above cap 0.100")
+
+    def test_missing_pricing_skips_spread_gate(self):
+        legs = [
+            {"action": "SELL", "bid": None, "ask": None, "mid": None, "open_interest": 500},
+            {"action": "BUY", "bid": None, "ask": None, "mid": None, "open_interest": 500},
+        ]
+        c = _make_candidate(legs=legs)
+        self.assertIsNone(_check_spread(c, 0.10))
+
+    def test_first_failure_wins_earnings_before_dte(self):
+        c = _make_candidate(next_earnings_date=date(2026, 5, 1), dte=12)
+        passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].reason, "earnings_blackout")
+
+    def test_empty_candidates_returns_empty(self):
+        passing, rejections = apply_quality_gates([], **self.DEFAULT_KW)
+        self.assertEqual(passing, [])
+        self.assertEqual(rejections, [])
+
+    def test_passing_and_failing_partition_correctly(self):
+        good = _make_candidate(symbol="AAPL")
+        bad = _make_candidate(symbol="MSFT", dte=12)
+        passing, rejections = apply_quality_gates([good, bad], **self.DEFAULT_KW)
+        self.assertEqual(passing, [good])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].symbol, "MSFT")
+        self.assertEqual(rejections[0].reason, "dte_out_of_range")
 
 
 if __name__ == "__main__":
