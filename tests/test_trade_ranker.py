@@ -21,6 +21,7 @@ from agents.trade_ranker import (
     _score_concentration_penalty,
     apply_account_filters,
     apply_quality_gates,
+    filter_by_ivr,
     generate_candidates,
     scan_watchlists,
     score_candidate,
@@ -390,7 +391,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
     async def test_single_context_produces_candidate(self):
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=_make_ok_report())
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(len(rejections), 0)
@@ -408,7 +409,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
     async def test_expiration_parsed_to_date_object(self):
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=_make_ok_report(ideas=[_make_idea(expiration="2026-06-19")]))
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         self.assertEqual(candidates[0].expiration, date(2026, 6, 19))
         self.assertIsInstance(candidates[0].expiration, date)
@@ -416,14 +417,14 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
     async def test_context_carried_through_to_candidate(self):
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=_make_ok_report())
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         self.assertIs(candidates[0].context, ctx)
 
     async def test_status_not_ok_emits_rejection(self):
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=_make_failure_report(status="NO_VIABLE_IDEAS", warnings=[]))
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         self.assertEqual(candidates, [])
         self.assertEqual(len(rejections), 1)
@@ -434,7 +435,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
     async def test_rejection_includes_first_warning(self):
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=_make_failure_report(status="NO_CHAIN", warnings=["chain unavailable", "x"]))
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         _, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         self.assertEqual(rejections[0].detail, "chain unavailable")
         self.assertEqual(rejections[0].reason, "NO_CHAIN")
@@ -442,7 +443,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
     async def test_researcher_exception_emits_rejection(self):
         researcher = MagicMock()
         researcher.research = AsyncMock(side_effect=RuntimeError("boom"))
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         self.assertEqual(candidates, [])
         self.assertEqual(len(rejections), 1)
@@ -453,7 +454,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
         ideas = [_make_idea(score=float(i)) for i in range(5)]
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=_make_ok_report(ideas=ideas))
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher, max_per_symbol=2)
         self.assertEqual(len(candidates), 2)
         self.assertEqual(candidates[0].researcher_score, 0.0)
@@ -473,7 +474,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
         instance.research = AsyncMock(return_value=_make_ok_report())
         mock_class.return_value = instance
         session = MagicMock()
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         await generate_candidates(session, [ctx])
         mock_class.assert_called_once_with(session)
 
@@ -494,7 +495,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
             _make_ok_report(symbol="AAPL"),
             _make_ok_report(symbol="MSFT"),
         ])
-        contexts = [SymbolContext(symbol="AAPL"), SymbolContext(symbol="MSFT")]
+        contexts = [SymbolContext(symbol="AAPL", iv_rank=50.0), SymbolContext(symbol="MSFT")]
         candidates, _ = await generate_candidates(MagicMock(), contexts, researcher=researcher)
         self.assertEqual([c.symbol for c in candidates], ["AAPL", "MSFT"])
 
@@ -509,7 +510,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
         report = {"status": "OK", "symbol": "AAPL", "warnings": [], "trade_ideas": [idea]}
         researcher = MagicMock()
         researcher.research = AsyncMock(return_value=report)
-        ctx = SymbolContext(symbol="AAPL")
+        ctx = SymbolContext(symbol="AAPL", iv_rank=50.0)
         candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
         c = candidates[0]
         self.assertEqual(c.breakevens, [])
@@ -1116,11 +1117,56 @@ class TestSelectTopPerSymbol(unittest.TestCase):
         self.assertEqual(_select_top_per_symbol(candidates, -1), [])
 
 
+class TestFilterByIvr(unittest.TestCase):
+    """Tests for filter_by_ivr helper."""
+
+    def test_keeps_at_or_above_threshold(self):
+        contexts = [SymbolContext(symbol="A", iv_rank=30.0), SymbolContext(symbol="B", iv_rank=80.0)]
+        passing, warnings = filter_by_ivr(contexts, 30.0)
+        self.assertEqual([c.symbol for c in passing], ["A", "B"])
+        self.assertEqual(warnings, [])
+
+    def test_drops_below_threshold(self):
+        contexts = [SymbolContext(symbol="A", iv_rank=15.0), SymbolContext(symbol="B", iv_rank=50.0)]
+        passing, warnings = filter_by_ivr(contexts, 30.0)
+        self.assertEqual([c.symbol for c in passing], ["B"])
+        self.assertEqual(warnings, ["skipped 1 symbols below IVR 30"])
+
+    def test_drops_none_iv_rank(self):
+        contexts = [SymbolContext(symbol="A", iv_rank=None), SymbolContext(symbol="B", iv_rank=50.0)]
+        passing, warnings = filter_by_ivr(contexts, 30.0)
+        self.assertEqual([c.symbol for c in passing], ["B"])
+        self.assertEqual(warnings, ["skipped 1 symbols with no IVR data"])
+
+    def test_aggregates_multiple_skips(self):
+        contexts = [
+            SymbolContext(symbol="A", iv_rank=10.0),
+            SymbolContext(symbol="B", iv_rank=None),
+            SymbolContext(symbol="C", iv_rank=20.0),
+            SymbolContext(symbol="D", iv_rank=None),
+            SymbolContext(symbol="E", iv_rank=60.0),
+        ]
+        passing, warnings = filter_by_ivr(contexts, 30.0)
+        self.assertEqual([c.symbol for c in passing], ["E"])
+        self.assertIn("skipped 2 symbols below IVR 30", warnings)
+        self.assertIn("skipped 2 symbols with no IVR data", warnings)
+
+    def test_empty_input_returns_empty(self):
+        passing, warnings = filter_by_ivr([], 30.0)
+        self.assertEqual(passing, [])
+        self.assertEqual(warnings, [])
+
+    def test_threshold_zero_keeps_all_with_data(self):
+        contexts = [SymbolContext(symbol="A", iv_rank=0.0), SymbolContext(symbol="B", iv_rank=None)]
+        passing, _ = filter_by_ivr(contexts, 0.0)
+        self.assertEqual([c.symbol for c in passing], ["A"])
+
+
 class TestLoadThresholds(unittest.TestCase):
     """Tests for _load_thresholds helper."""
 
     @patch("agents.trade_ranker.settings")
-    def test_load_thresholds_returns_all_nine_keys(self, mock_settings):
+    def test_load_thresholds_returns_all_keys(self, mock_settings):
         from agents.trade_ranker import _load_thresholds
         mock_settings.get.side_effect = lambda key: f"value_for_{key}"
         result = _load_thresholds()
@@ -1136,6 +1182,7 @@ class TestLoadThresholds(unittest.TestCase):
                 "max_pct_nlv_per_trade",
                 "bp_cap_for_new",
                 "concentration_block_pct",
+                "min_ivr",
             },
         )
         expected_calls = [
@@ -1148,6 +1195,7 @@ class TestLoadThresholds(unittest.TestCase):
             "bt_max_pct_nlv_per_trade",
             "bt_bp_cap_for_new",
             "bt_concentration_overlap_block_pct",
+            "bt_min_ivr",
         ]
         actual_calls = [call.args[0] for call in mock_settings.get.call_args_list]
         self.assertEqual(set(actual_calls), set(expected_calls))
@@ -1174,7 +1222,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_no_candidates_returns_no_trades(self, mock_scan, mock_gen):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         mock_gen.return_value = ([], [Rejection(symbol="AAPL", reason="no_chains", detail="none")])
         result = await run_best_trades(MagicMock(), watchlists=["X"])
         self.assertEqual(result["top"], [])
@@ -1186,7 +1234,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_all_rejected_by_gates_returns_no_trades(self, mock_scan, mock_gen, mock_gates):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate()
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([], [Rejection(symbol="AAPL", reason="earnings_blackout", detail="2 days")])
@@ -1199,7 +1247,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_basic_pipeline_returns_scored_top(self, mock_scan, mock_gen, mock_gates):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1214,7 +1262,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_top_selection_dedupes_by_symbol(self, mock_scan, mock_gen, mock_gates):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         c1 = self._passing_candidate("AAPL", 60.0)
         c2 = self._passing_candidate("AAPL", 90.0)
         c3 = self._passing_candidate("AAPL", 70.0)
@@ -1229,7 +1277,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_top_selection_caps_at_n(self, mock_scan, mock_gen, mock_gates):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidates = [self._passing_candidate(s, 100 - i * 10) for i, s in enumerate(["A", "B", "C", "D", "E"])]
         mock_gen.return_value = (candidates, [])
         mock_gates.return_value = (candidates, [])
@@ -1242,7 +1290,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_top_selection_sorts_by_score_descending(self, mock_scan, mock_gen, mock_gates, mock_score):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidates = [self._passing_candidate(s, 50) for s in ["X", "Y", "Z"]]
         mock_gen.return_value = (candidates, [])
         mock_gates.return_value = (candidates, [])
@@ -1260,7 +1308,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_top_selection_tie_breaks_by_symbol_ascending(self, mock_scan, mock_gen, mock_gates, mock_score):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidates = [self._passing_candidate(s, 75) for s in ["B", "A", "C"]]
         mock_gen.return_value = (candidates, [])
         mock_gates.return_value = (candidates, [])
@@ -1281,7 +1329,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
         self, mock_scan, mock_gen, mock_gates, mock_account_filters, mock_build_state
     ):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1302,7 +1350,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
         self, mock_scan, mock_gen, mock_gates, mock_account_filters
     ):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1319,7 +1367,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
         self, mock_scan, mock_gen, mock_gates, mock_account_filters, mock_build_state
     ):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1335,7 +1383,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_result_shape_has_canonical_keys(self, mock_scan, mock_gen, mock_gates):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1346,7 +1394,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_rejected_items_have_symbol_reason_detail_only(self, mock_scan, mock_gen):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         mock_gen.return_value = ([], [Rejection(symbol="AAPL", reason="no_chains", detail="none")])
         result = await run_best_trades(MagicMock(), watchlists=["X"])
         for item in result["rejected"]:
@@ -1367,7 +1415,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
         self, mock_scan, mock_gen, mock_gates, mock_score
     ):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1384,7 +1432,7 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_top_zero_returns_empty_top(self, mock_scan, mock_gen, mock_gates):
         from agents.trade_ranker import run_best_trades
-        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=50.0)], [])
         candidate = self._passing_candidate("AAPL", 75.0)
         mock_gen.return_value = ([candidate], [])
         mock_gates.return_value = ([candidate], [])
@@ -1398,6 +1446,26 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
         await run_best_trades(MagicMock(), watchlists=None)
         called_args = mock_scan.await_args
         self.assertEqual(called_args.args[1], list(DEFAULT_WATCHLISTS))
+
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_ivr_prefilter_drops_low_ivr_before_research(self, mock_scan, mock_gen):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = (
+            [
+                SymbolContext(symbol="AAPL", iv_rank=15.0),
+                SymbolContext(symbol="MSFT", iv_rank=50.0),
+                SymbolContext(symbol="UNKN", iv_rank=None),
+            ],
+            [],
+        )
+        mock_gen.return_value = ([], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        mock_gen.assert_awaited_once()
+        passed_contexts = mock_gen.await_args.args[1]
+        self.assertEqual([c.symbol for c in passed_contexts], ["MSFT"])
+        self.assertTrue(any("below IVR 30" in w for w in result["warnings"]))
+        self.assertTrue(any("no IVR data" in w for w in result["warnings"]))
 
     @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
     async def test_scan_failure_degrades_gracefully(self, mock_scan):

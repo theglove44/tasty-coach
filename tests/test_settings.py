@@ -346,6 +346,17 @@ class TestBestTradesSettingsRoundTrip(unittest.TestCase):
             s.set("bt_concentration_overlap_block_pct", 0.30)
             self.assertEqual(s.get("bt_concentration_overlap_block_pct"), 0.30)
 
+    def test_bt_min_ivr_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_min_ivr", 40.0)
+            self.assertEqual(s.get("bt_min_ivr"), 40.0)
+
+    def test_bt_min_ivr_default_thirty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            self.assertEqual(s.get("bt_min_ivr"), 30.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -258,7 +258,7 @@ def _build_context(
 
 
 def _load_thresholds() -> dict[str, Any]:
-    """Read all 9 best-trades threshold settings into a single dict."""
+    """Read all best-trades threshold settings into a single dict."""
     return {
         "blackout_days": settings.get("bt_earnings_blackout_days"),
         "min_dte": settings.get("bt_min_dte"),
@@ -269,7 +269,32 @@ def _load_thresholds() -> dict[str, Any]:
         "max_pct_nlv_per_trade": settings.get("bt_max_pct_nlv_per_trade"),
         "bp_cap_for_new": settings.get("bt_bp_cap_for_new"),
         "concentration_block_pct": settings.get("bt_concentration_overlap_block_pct"),
+        "min_ivr": settings.get("bt_min_ivr"),
     }
+
+
+def filter_by_ivr(
+    contexts: list[SymbolContext],
+    min_ivr: float,
+) -> tuple[list[SymbolContext], list[str]]:
+    """Drop SymbolContexts whose iv_rank is None or below the threshold; return (passing, warnings)."""
+    passing: list[SymbolContext] = []
+    skipped_below = 0
+    skipped_no_data = 0
+    for ctx in contexts:
+        if ctx.iv_rank is None:
+            skipped_no_data += 1
+            continue
+        if ctx.iv_rank < min_ivr:
+            skipped_below += 1
+            continue
+        passing.append(ctx)
+    warnings: list[str] = []
+    if skipped_below:
+        warnings.append(f"skipped {skipped_below} symbols below IVR {min_ivr:.0f}")
+    if skipped_no_data:
+        warnings.append(f"skipped {skipped_no_data} symbols with no IVR data")
+    return passing, warnings
 
 
 def _select_top_per_symbol(candidates: list[Candidate], top: int) -> list[Candidate]:
@@ -358,6 +383,11 @@ async def run_best_trades(
         return result
 
     thresholds = _load_thresholds()
+
+    contexts, ivr_warnings = filter_by_ivr(contexts, thresholds["min_ivr"])
+    result["warnings"].extend(ivr_warnings)
+    if not contexts:
+        return result
 
     candidates, gen_rejections = await generate_candidates(
         session,
