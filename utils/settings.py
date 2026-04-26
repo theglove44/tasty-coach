@@ -17,6 +17,7 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
     "bt_max_pct_nlv_per_trade",
     "bt_bp_cap_for_new",
     "bt_concentration_overlap_block_pct",
+    "bt_min_ivr",
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
@@ -44,6 +45,7 @@ DEFAULTS: dict[str, Any] = {
     "bt_max_pct_nlv_per_trade": 0.05,
     "bt_bp_cap_for_new": 0.50,
     "bt_concentration_overlap_block_pct": 0.25,
+    "bt_min_ivr": 30.0,
     "alert_toggles": {
         "position_size": True,
         "bp": True,
