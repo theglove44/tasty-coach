@@ -7,7 +7,7 @@ CLI and launcher entry points can be wired in isolation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from typing import Any, Optional, Sequence
@@ -63,6 +63,9 @@ class Candidate:
     researcher_score: float
     researcher_score_breakdown: dict[str, Any]
     context: SymbolContext
+    score: float = 0.0
+    score_breakdown: dict[str, float] = field(default_factory=dict)
+    summary_reason: str = ""
 
 
 @dataclass
@@ -391,3 +394,197 @@ def apply_quality_gates(
         else:
             rejections.append(rejection)
     return (passing, rejections)
+
+
+_WEIGHT_REGIME_FIT: float = 15.0
+_WEIGHT_LIQUIDITY: float = 20.0
+_WEIGHT_VOLATILITY_EDGE: float = 25.0
+_WEIGHT_EVENT_RISK: float = 10.0
+_WEIGHT_STRUCTURE_QUALITY: float = 20.0
+_WEIGHT_ACCOUNT_FIT: float = 10.0
+
+
+def _score_regime_fit(candidate: Candidate) -> float:
+    """Map IVR (0-100) linearly to [0, 15]; neutral 7.5 when iv_rank is None."""
+    ivr = candidate.context.iv_rank
+    if ivr is None:
+        return 7.5
+    factor = max(0.0, min(1.0, ivr / 100.0))
+    return factor * _WEIGHT_REGIME_FIT
+
+
+def _score_liquidity(candidate: Candidate) -> float:
+    """Blend min-OI factor (full at 1000+) and worst-spread factor (zero at 10%) into [0, 20]."""
+    legs = candidate.legs
+    if not legs:
+        return 0.0
+
+    ois = [leg.get("open_interest") for leg in legs if leg.get("open_interest") is not None]
+    min_oi = min(ois) if ois else 0
+    oi_factor = min(1.0, min_oi / 1000.0)
+
+    ratios: list[float] = []
+    for leg in legs:
+        bid = leg.get("bid")
+        ask = leg.get("ask")
+        mid = leg.get("mid")
+        if bid is None or ask is None or mid is None or mid <= 0:
+            continue
+        ratios.append((ask - bid) / mid)
+    if ratios:
+        worst_spread = max(ratios)
+        spread_factor = max(0.0, 1.0 - (worst_spread / 0.10))
+    else:
+        spread_factor = 0.0
+
+    return _WEIGHT_LIQUIDITY * (0.5 * oi_factor + 0.5 * spread_factor)
+
+
+def _score_volatility_edge(candidate: Candidate) -> float:
+    """Blend IVR factor (60%) and credit/width factor (40%) into [0, 25]."""
+    ivr = candidate.context.iv_rank
+    ivr_factor = max(0.0, min(1.0, (ivr or 0.0) / 100.0))
+    credit_factor = max(
+        0.0,
+        min(1.0, (candidate.credit_pct_of_width - 0.20) / 0.30),
+    )
+    return _WEIGHT_VOLATILITY_EDGE * (0.6 * ivr_factor + 0.4 * credit_factor)
+
+
+def _score_event_risk(candidate: Candidate, today: date) -> float:
+    """Linear ramp 7d→21d to earnings; full 10 when no earnings or earnings past/>=21d away."""
+    earnings = candidate.context.next_earnings_date
+    if earnings is None:
+        return _WEIGHT_EVENT_RISK
+    delta_days = (earnings - today).days
+    if delta_days < 0:
+        return _WEIGHT_EVENT_RISK
+    if delta_days >= 21:
+        return _WEIGHT_EVENT_RISK
+    if delta_days <= 7:
+        return 0.0
+    return ((delta_days - 7) / 14.0) * _WEIGHT_EVENT_RISK
+
+
+def _score_structure_quality(candidate: Candidate) -> float:
+    """Blend delta-band fit (peak at 0.25) and credit/width (full at 40%+) into [0, 20]."""
+    delta_factor = max(0.0, 1.0 - abs(candidate.short_delta - 0.25) / 0.20)
+    credit_width_factor = max(0.0, min(1.0, candidate.credit_pct_of_width / 0.40))
+    return _WEIGHT_STRUCTURE_QUALITY * (0.5 * delta_factor + 0.5 * credit_width_factor)
+
+
+def _score_account_fit(candidate: Candidate) -> float:
+    """Placeholder (TCBT-4 wires real logic): always returns 10.0."""
+    return _WEIGHT_ACCOUNT_FIT
+
+
+def _score_concentration_penalty(candidate: Candidate) -> float:
+    """Placeholder (TCBT-4 wires real logic): always returns 0.0 (positive penalty value)."""
+    return 0.0
+
+
+def _format_summary_reason(
+    candidate: Candidate,
+    breakdown: dict[str, float],
+    today: date,
+) -> str:
+    """Build a one-line plain-English string of the 2-4 strongest positive factors."""
+    phrases: list[str] = []
+
+    ivr = candidate.context.iv_rank
+    if breakdown["regime_fit"] / _WEIGHT_REGIME_FIT >= 0.6 and ivr is not None:
+        phrases.append(f"IVR {round(ivr)}")
+
+    legs = candidate.legs
+    ois = [leg.get("open_interest") for leg in legs if leg.get("open_interest") is not None]
+    min_oi = min(ois) if ois else 0
+    oi_factor = min(1.0, min_oi / 1000.0)
+    ratios: list[float] = []
+    for leg in legs:
+        bid = leg.get("bid")
+        ask = leg.get("ask")
+        mid = leg.get("mid")
+        if bid is None or ask is None or mid is None or mid <= 0:
+            continue
+        ratios.append((ask - bid) / mid)
+    if ratios:
+        worst_spread = max(ratios)
+        spread_factor = max(0.0, 1.0 - (worst_spread / 0.10))
+    else:
+        spread_factor = 0.0
+    if breakdown["liquidity"] / _WEIGHT_LIQUIDITY >= 0.6:
+        if spread_factor > oi_factor:
+            phrases.append("tight spreads")
+        else:
+            phrases.append("deep liquidity")
+
+    if breakdown["volatility_edge"] / _WEIGHT_VOLATILITY_EDGE >= 0.6:
+        phrases.append(f"credit {round(candidate.credit_pct_of_width * 100)}% of width")
+
+    earnings = candidate.context.next_earnings_date
+    if breakdown["event_risk"] >= _WEIGHT_EVENT_RISK:
+        if earnings is None:
+            phrases.append("no earnings")
+        else:
+            delta_days = (earnings - today).days
+            if delta_days >= 21 or delta_days < 0:
+                phrases.append("clean event window")
+
+    if breakdown["structure_quality"] / _WEIGHT_STRUCTURE_QUALITY >= 0.6:
+        phrases.append(f"delta {candidate.short_delta:.2f}")
+
+    if not phrases:
+        return "weak across all factors"
+
+    return ", ".join(phrases[:4])
+
+
+def score_candidate(
+    candidate: Candidate,
+    *,
+    today: Optional[date] = None,
+) -> Candidate:
+    """Return a new Candidate with score, score_breakdown, and summary_reason populated."""
+    if today is None:
+        today = date.today()
+
+    regime = _score_regime_fit(candidate)
+    liquidity = _score_liquidity(candidate)
+    vol_edge = _score_volatility_edge(candidate)
+    event = _score_event_risk(candidate, today)
+    structure = _score_structure_quality(candidate)
+    account = _score_account_fit(candidate)
+    penalty = _score_concentration_penalty(candidate)
+
+    breakdown: dict[str, float] = {
+        "regime_fit": regime,
+        "liquidity": liquidity,
+        "volatility_edge": vol_edge,
+        "event_risk": event,
+        "structure_quality": structure,
+        "account_fit": account,
+        "concentration_penalty": penalty,
+    }
+
+    total = regime + liquidity + vol_edge + event + structure + account - penalty
+    score = max(0.0, min(100.0, total))
+
+    summary = _format_summary_reason(candidate, breakdown, today)
+
+    return replace(
+        candidate,
+        score=score,
+        score_breakdown=breakdown,
+        summary_reason=summary,
+    )
+
+
+def score_candidates(
+    candidates: list[Candidate],
+    *,
+    today: Optional[date] = None,
+) -> list[Candidate]:
+    """Score each candidate; preserve input order; pure (returns new list of new Candidates)."""
+    if today is None:
+        today = date.today()
+    return [score_candidate(c, today=today) for c in candidates]

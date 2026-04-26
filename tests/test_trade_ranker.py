@@ -19,6 +19,8 @@ from agents.trade_ranker import (
     apply_quality_gates,
     generate_candidates,
     scan_watchlists,
+    score_candidate,
+    score_candidates,
 )
 
 
@@ -329,8 +331,9 @@ def _make_candidate(
     researcher_score: float = 72.0,
     researcher_score_breakdown: Optional[dict] = None,
     next_earnings_date: Optional[date] = None,
+    iv_rank: Optional[float] = None,
 ) -> Candidate:
-    ctx = SymbolContext(symbol=symbol, next_earnings_date=next_earnings_date)
+    ctx = SymbolContext(symbol=symbol, next_earnings_date=next_earnings_date, iv_rank=iv_rank)
     default_legs = [
         {"action": "SELL", "bid": 1.50, "ask": 1.55, "mid": 1.525, "open_interest": 500},
         {"action": "BUY", "bid": 0.40, "ask": 0.42, "mid": 0.41, "open_interest": 500},
@@ -645,6 +648,178 @@ class TestQualityGates(unittest.TestCase):
         self.assertEqual(len(rejections), 1)
         self.assertEqual(rejections[0].symbol, "MSFT")
         self.assertEqual(rejections[0].reason, "dte_out_of_range")
+
+
+class TestScoring(unittest.TestCase):
+    """Tests for score_candidate and score_candidates."""
+
+    _TODAY = date(2026, 4, 26)
+
+    @staticmethod
+    def _liquid_legs():
+        return [
+            {"action": "SELL", "bid": 1.00, "ask": 1.02, "mid": 1.01, "open_interest": 5000},
+            {"action": "BUY",  "bid": 0.50, "ask": 0.52, "mid": 0.51, "open_interest": 5000},
+        ]
+
+    def test_score_in_zero_to_hundred_range(self):
+        c = _make_candidate(iv_rank=70.0, credit_pct_of_width=0.35, legs=self._liquid_legs())
+        scored = score_candidate(c, today=self._TODAY)
+        self.assertGreaterEqual(scored.score, 0.0)
+        self.assertLessEqual(scored.score, 100.0)
+
+    def test_breakdown_keys_exactly_seven(self):
+        c = _make_candidate()
+        scored = score_candidate(c, today=self._TODAY)
+        self.assertEqual(
+            set(scored.score_breakdown.keys()),
+            {"regime_fit", "liquidity", "volatility_edge", "event_risk", "structure_quality", "account_fit", "concentration_penalty"},
+        )
+
+    def test_breakdown_sums_within_tolerance_of_score(self):
+        c = _make_candidate(iv_rank=50.0, credit_pct_of_width=0.30, legs=self._liquid_legs())
+        scored = score_candidate(c, today=self._TODAY)
+        b = scored.score_breakdown
+        total = b["regime_fit"] + b["liquidity"] + b["volatility_edge"] + b["event_risk"] + b["structure_quality"] + b["account_fit"] - b["concentration_penalty"]
+        self.assertAlmostEqual(total, scored.score, places=9)
+
+    def test_high_ivr_scores_higher_than_low_ivr(self):
+        high = _make_candidate(iv_rank=80.0, legs=self._liquid_legs())
+        low = _make_candidate(iv_rank=20.0, legs=self._liquid_legs())
+        self.assertGreater(score_candidate(high, today=self._TODAY).score, score_candidate(low, today=self._TODAY).score)
+
+    def test_higher_credit_ratio_scores_higher(self):
+        good = _make_candidate(credit_pct_of_width=0.45, legs=self._liquid_legs())
+        bad = _make_candidate(credit_pct_of_width=0.22, legs=self._liquid_legs())
+        self.assertGreater(score_candidate(good, today=self._TODAY).score, score_candidate(bad, today=self._TODAY).score)
+
+    def test_tighter_spread_scores_higher(self):
+        tight_legs = [
+            {"action": "SELL", "bid": 1.00, "ask": 1.01, "mid": 1.005, "open_interest": 5000},
+            {"action": "BUY",  "bid": 0.50, "ask": 0.51, "mid": 0.505, "open_interest": 5000},
+        ]
+        wide_legs = [
+            {"action": "SELL", "bid": 1.00, "ask": 1.09, "mid": 1.045, "open_interest": 5000},
+            {"action": "BUY",  "bid": 0.50, "ask": 0.55, "mid": 0.525, "open_interest": 5000},
+        ]
+        tight_score = score_candidate(_make_candidate(legs=tight_legs), today=self._TODAY).score_breakdown["liquidity"]
+        wide_score = score_candidate(_make_candidate(legs=wide_legs), today=self._TODAY).score_breakdown["liquidity"]
+        self.assertGreater(tight_score, wide_score)
+
+    def test_higher_oi_scores_higher(self):
+        deep = self._liquid_legs()
+        thin = [
+            {"action": "SELL", "bid": 1.00, "ask": 1.02, "mid": 1.01, "open_interest": 50},
+            {"action": "BUY",  "bid": 0.50, "ask": 0.52, "mid": 0.51, "open_interest": 50},
+        ]
+        deep_lq = score_candidate(_make_candidate(legs=deep), today=self._TODAY).score_breakdown["liquidity"]
+        thin_lq = score_candidate(_make_candidate(legs=thin), today=self._TODAY).score_breakdown["liquidity"]
+        self.assertGreater(deep_lq, thin_lq)
+
+    def test_no_earnings_full_event_risk_score(self):
+        c = _make_candidate(next_earnings_date=None)
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["event_risk"], 10.0)
+
+    def test_close_earnings_8d_lowers_event_score(self):
+        c = _make_candidate(next_earnings_date=date(2026, 5, 4))
+        ev = score_candidate(c, today=self._TODAY).score_breakdown["event_risk"]
+        self.assertGreater(ev, 0.0)
+        self.assertLess(ev, 10.0)
+        self.assertAlmostEqual(ev, (1 / 14.0) * 10.0, places=9)
+
+    def test_close_earnings_14d_partial_event_score(self):
+        c = _make_candidate(next_earnings_date=date(2026, 5, 10))
+        self.assertAlmostEqual(score_candidate(c, today=self._TODAY).score_breakdown["event_risk"], 5.0, places=9)
+
+    def test_far_earnings_full_event_score(self):
+        c = _make_candidate(next_earnings_date=date(2026, 5, 26))
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["event_risk"], 10.0)
+
+    def test_past_earnings_full_event_score(self):
+        c = _make_candidate(next_earnings_date=date(2026, 4, 21))
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["event_risk"], 10.0)
+
+    def test_short_delta_at_quarter_scores_high(self):
+        c = _make_candidate(short_delta=0.25, credit_pct_of_width=0.40, legs=self._liquid_legs())
+        sq = score_candidate(c, today=self._TODAY).score_breakdown["structure_quality"]
+        self.assertGreaterEqual(sq, 10.0)
+
+    def test_short_delta_at_45_scores_lower(self):
+        good = _make_candidate(short_delta=0.25, credit_pct_of_width=0.40, legs=self._liquid_legs())
+        bad = _make_candidate(short_delta=0.45, credit_pct_of_width=0.40, legs=self._liquid_legs())
+        self.assertGreater(
+            score_candidate(good, today=self._TODAY).score_breakdown["structure_quality"],
+            score_candidate(bad, today=self._TODAY).score_breakdown["structure_quality"],
+        )
+
+    def test_account_fit_placeholder_returns_ten(self):
+        c = _make_candidate()
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["account_fit"], 10.0)
+
+    def test_concentration_penalty_placeholder_returns_zero(self):
+        c = _make_candidate()
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["concentration_penalty"], 0.0)
+
+    def test_summary_reason_is_single_line(self):
+        c = _make_candidate(iv_rank=70.0, credit_pct_of_width=0.40, legs=self._liquid_legs())
+        self.assertNotIn("\n", score_candidate(c, today=self._TODAY).summary_reason)
+
+    def test_summary_reason_mentions_strong_factors(self):
+        c = _make_candidate(iv_rank=70.0, credit_pct_of_width=0.40, legs=self._liquid_legs())
+        self.assertIn("IVR", score_candidate(c, today=self._TODAY).summary_reason)
+
+    def test_summary_reason_fallback_when_all_weak(self):
+        c = _make_candidate(
+            iv_rank=0.0,
+            credit_pct_of_width=0.18,
+            legs=[],
+            short_delta=0.05,
+            next_earnings_date=date(2026, 5, 1),
+        )
+        self.assertEqual(score_candidate(c, today=self._TODAY).summary_reason, "weak across all factors")
+
+    def test_score_candidates_preserves_order(self):
+        candidates = [
+            _make_candidate(symbol="AAPL"),
+            _make_candidate(symbol="MSFT"),
+            _make_candidate(symbol="SPY"),
+        ]
+        scored = score_candidates(candidates, today=self._TODAY)
+        self.assertEqual([c.symbol for c in scored], ["AAPL", "MSFT", "SPY"])
+
+    def test_score_candidates_empty_returns_empty(self):
+        self.assertEqual(score_candidates([], today=self._TODAY), [])
+
+    def test_score_candidate_returns_new_instance_not_mutated(self):
+        c = _make_candidate(iv_rank=50.0, legs=self._liquid_legs())
+        scored = score_candidate(c, today=self._TODAY)
+        self.assertEqual(c.score, 0.0)
+        self.assertGreater(scored.score, 0.0)
+        self.assertIsNot(scored, c)
+
+    def test_legs_empty_zero_liquidity(self):
+        c = _make_candidate(legs=[])
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["liquidity"], 0.0)
+
+    def test_iv_rank_none_neutral_regime_fit(self):
+        c = _make_candidate(iv_rank=None)
+        self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["regime_fit"], 7.5)
+
+    def test_score_clamped_to_hundred(self):
+        max_legs = [
+            {"action": "SELL", "bid": 1.00, "ask": 1.00, "mid": 1.00, "open_interest": 10000},
+            {"action": "BUY",  "bid": 0.50, "ask": 0.50, "mid": 0.50, "open_interest": 10000},
+        ]
+        c = _make_candidate(
+            iv_rank=100.0,
+            credit_pct_of_width=0.50,
+            short_delta=0.25,
+            legs=max_legs,
+            next_earnings_date=date(2026, 6, 25),
+        )
+        scored = score_candidate(c, today=self._TODAY)
+        self.assertLessEqual(scored.score, 100.0)
+        self.assertAlmostEqual(scored.score, 100.0, places=2)
 
 
 if __name__ == "__main__":
