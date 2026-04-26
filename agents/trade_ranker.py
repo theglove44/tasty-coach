@@ -433,7 +433,7 @@ def _score_liquidity(candidate: Candidate) -> float:
         ratios.append((ask - bid) / mid)
     if ratios:
         worst_spread = max(ratios)
-        spread_factor = max(0.0, 1.0 - (worst_spread / 0.10))
+        spread_factor = max(0.0, min(1.0, 1.0 - (worst_spread / 0.10)))
     else:
         spread_factor = 0.0
 
@@ -467,8 +467,8 @@ def _score_event_risk(candidate: Candidate, today: date) -> float:
 
 
 def _score_structure_quality(candidate: Candidate) -> float:
-    """Blend delta-band fit (peak at 0.25) and credit/width (full at 40%+) into [0, 20]."""
-    delta_factor = max(0.0, 1.0 - abs(candidate.short_delta - 0.25) / 0.20)
+    """Blend delta-band fit (peak at 0.25 magnitude) and credit/width (full at 40%+) into [0, 20]."""
+    delta_factor = max(0.0, 1.0 - abs(abs(candidate.short_delta) - 0.25) / 0.20)
     credit_width_factor = max(0.0, min(1.0, candidate.credit_pct_of_width / 0.40))
     return _WEIGHT_STRUCTURE_QUALITY * (0.5 * delta_factor + 0.5 * credit_width_factor)
 
@@ -509,7 +509,7 @@ def _format_summary_reason(
         ratios.append((ask - bid) / mid)
     if ratios:
         worst_spread = max(ratios)
-        spread_factor = max(0.0, 1.0 - (worst_spread / 0.10))
+        spread_factor = max(0.0, min(1.0, 1.0 - (worst_spread / 0.10)))
     else:
         spread_factor = 0.0
     if breakdown["liquidity"] / _WEIGHT_LIQUIDITY >= 0.6:

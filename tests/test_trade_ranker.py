@@ -805,6 +805,25 @@ class TestScoring(unittest.TestCase):
         c = _make_candidate(iv_rank=None)
         self.assertEqual(score_candidate(c, today=self._TODAY).score_breakdown["regime_fit"], 7.5)
 
+    def test_negative_short_delta_scores_same_as_positive(self):
+        """PUT spreads carry signed (negative) short_delta from researcher; structure_quality must use magnitude."""
+        legs = self._liquid_legs()
+        put = _make_candidate(short_delta=-0.25, credit_pct_of_width=0.40, legs=legs)
+        call = _make_candidate(short_delta=0.25, credit_pct_of_width=0.40, legs=legs)
+        put_sq = score_candidate(put, today=self._TODAY).score_breakdown["structure_quality"]
+        call_sq = score_candidate(call, today=self._TODAY).score_breakdown["structure_quality"]
+        self.assertAlmostEqual(put_sq, call_sq, places=9)
+
+    def test_crossed_market_does_not_inflate_liquidity(self):
+        """Crossed quote (ask < bid) → negative spread → liquidity must stay at weight cap, not exceed it."""
+        crossed_legs = [
+            {"action": "SELL", "bid": 1.05, "ask": 1.00, "mid": 1.025, "open_interest": 5000},
+            {"action": "BUY",  "bid": 0.55, "ask": 0.50, "mid": 0.525, "open_interest": 5000},
+        ]
+        c = _make_candidate(legs=crossed_legs)
+        liquidity = score_candidate(c, today=self._TODAY).score_breakdown["liquidity"]
+        self.assertLessEqual(liquidity, 20.0)
+
     def test_score_clamped_to_hundred(self):
         max_legs = [
             {"action": "SELL", "bid": 1.00, "ask": 1.00, "mid": 1.00, "open_interest": 10000},
