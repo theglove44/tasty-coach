@@ -328,6 +328,24 @@ class TestBestTradesSettingsRoundTrip(unittest.TestCase):
             s.set("bt_max_spread_pct", 0.05)
             self.assertEqual(s.get("bt_max_spread_pct"), 0.05)
 
+    def test_bt_max_pct_nlv_per_trade_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_max_pct_nlv_per_trade", 0.07)
+            self.assertEqual(s.get("bt_max_pct_nlv_per_trade"), 0.07)
+
+    def test_bt_bp_cap_for_new_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_bp_cap_for_new", 0.40)
+            self.assertEqual(s.get("bt_bp_cap_for_new"), 0.40)
+
+    def test_bt_concentration_overlap_block_pct_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_concentration_overlap_block_pct", 0.30)
+            self.assertEqual(s.get("bt_concentration_overlap_block_pct"), 0.30)
+
 
 if __name__ == "__main__":
     unittest.main()
