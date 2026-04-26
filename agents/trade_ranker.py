@@ -279,7 +279,7 @@ def _check_earnings_blackout(candidate: Candidate, blackout_days: int, today: da
     if earnings is None:
         return None
     delta_days = (earnings - today).days
-    if delta_days <= blackout_days:
+    if 0 <= delta_days <= blackout_days:
         return Rejection(
             symbol=candidate.symbol,
             reason="earnings_blackout",

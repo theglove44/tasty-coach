@@ -525,6 +525,23 @@ class TestQualityGates(unittest.TestCase):
         c = _make_candidate(next_earnings_date=None)
         self.assertIsNone(_check_earnings_blackout(c, 7, date(2026, 4, 26)))
 
+    def test_earnings_today_still_rejected(self):
+        today = date(2026, 4, 26)
+        c = _make_candidate(next_earnings_date=today)
+        rejection = _check_earnings_blackout(c, 7, today)
+        self.assertIsNotNone(rejection)
+        self.assertEqual(rejection.reason, "earnings_blackout")
+
+    def test_earnings_yesterday_does_not_reject(self):
+        today = date(2026, 4, 26)
+        c = _make_candidate(next_earnings_date=date(2026, 4, 25))
+        self.assertIsNone(_check_earnings_blackout(c, 7, today))
+
+    def test_earnings_far_past_does_not_reject(self):
+        today = date(2026, 4, 26)
+        c = _make_candidate(next_earnings_date=date(2026, 3, 27))
+        self.assertIsNone(_check_earnings_blackout(c, 7, today))
+
     def test_dte_below_min_rejected(self):
         c = _make_candidate(dte=12)
         passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
