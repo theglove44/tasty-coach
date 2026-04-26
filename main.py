@@ -269,6 +269,7 @@ async def async_main() -> int:
                 watchlists=args.bt_watchlist,
                 top=args.top,
                 output_format=args.format,
+                account_number=args.account or getattr(client.config, "account_number", None),
             )
 
             if args.format == "json":

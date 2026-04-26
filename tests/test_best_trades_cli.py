@@ -61,59 +61,67 @@ class TestBestTradesArgparse(unittest.TestCase):
 
 
 class TestRunBestTradesStub(unittest.IsolatedAsyncioTestCase):
-    """Test the run_best_trades stub function."""
+    """Smoke tests on run_best_trades that mock scan_watchlists to skip real I/O."""
 
-    async def test_default_watchlists_used_when_none(self):
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_default_watchlists_used_when_none(self, mock_scan):
         from agents.trade_ranker import run_best_trades, DEFAULT_WATCHLISTS
-        result = await run_best_trades(MagicMock())
+        mock_scan.return_value = ([], [])
+        result = await run_best_trades(MagicMock(), watchlists=None)
         self.assertEqual(result["watchlists"], list(DEFAULT_WATCHLISTS))
+        mock_scan.assert_awaited_once()
+        called_args = mock_scan.await_args
+        self.assertEqual(called_args.args[1], list(DEFAULT_WATCHLISTS))
 
-    async def test_explicit_watchlists_honoured(self):
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_explicit_watchlists_honoured(self, mock_scan):
         from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], [])
         result = await run_best_trades(MagicMock(), watchlists=["X", "Y"])
         self.assertEqual(result["watchlists"], ["X", "Y"])
 
-    async def test_explicit_empty_watchlists_honoured(self):
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_explicit_empty_watchlists_honoured(self, mock_scan):
         from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], [])
         result = await run_best_trades(MagicMock(), watchlists=[])
         self.assertEqual(result["watchlists"], [])
 
-    async def test_canonical_shape(self):
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_canonical_shape(self, mock_scan):
         from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], [])
         result = await run_best_trades(MagicMock())
-        self.assertEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
+        self.assertGreaterEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
         self.assertEqual(result["top"], [])
         self.assertEqual(result["rejected"], [])
         self.assertEqual(result["warnings"], [])
 
-    async def test_session_not_called(self):
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_top_arg_accepted(self, mock_scan):
         from agents.trade_ranker import run_best_trades
-        session = MagicMock()
-        await run_best_trades(session)
-        self.assertEqual(session.method_calls, [])
-        self.assertEqual(session.mock_calls, [])
-
-    async def test_top_arg_accepted(self):
-        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], [])
         result = await run_best_trades(MagicMock(), top=10)
-        self.assertEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
+        self.assertGreaterEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
 
-    async def test_output_format_arg_accepted(self):
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_output_format_arg_accepted(self, mock_scan):
         from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], [])
         result = await run_best_trades(MagicMock(), output_format="json")
-        self.assertEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
+        self.assertGreaterEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
 
 
 class TestBestTradesCliOutput(unittest.IsolatedAsyncioTestCase):
     """Test text and JSON output formats and CLI dispatch."""
 
-    def test_text_output_contains_stub_marker(self):
-        from agents.trade_ranker import _print_best_trades_text, STUB_MARKER
+    def test_text_output_contains_header(self):
+        from agents.trade_ranker import _print_best_trades_text
         result = {"top": [], "rejected": [], "warnings": [], "watchlists": ["A"]}
         f = io.StringIO()
         with redirect_stdout(f):
             _print_best_trades_text(result, 3)
-        self.assertIn(STUB_MARKER, f.getvalue())
+        self.assertIn("Best Trades Today", f.getvalue())
 
     def test_text_output_lists_watchlists(self):
         from agents.trade_ranker import _print_best_trades_text
