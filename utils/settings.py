@@ -13,9 +13,17 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
     "bp_usage_warn",
     "bp_usage_block",
     "concentration_pct_nlv_warn",
+    "bt_max_spread_pct",
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
+})
+INTEGER_KEYS: frozenset[str] = frozenset({
+    "bt_earnings_blackout_days",
+    "bt_min_dte",
+    "bt_max_dte",
+    "bt_min_open_interest",
+    "bt_max_per_symbol",
 })
 
 DEFAULTS: dict[str, Any] = {
@@ -24,6 +32,12 @@ DEFAULTS: dict[str, Any] = {
     "bp_usage_block": 0.50,
     "theta_target": None,
     "concentration_pct_nlv_warn": 0.15,
+    "bt_earnings_blackout_days": 7,
+    "bt_min_dte": 21,
+    "bt_max_dte": 60,
+    "bt_min_open_interest": 200,
+    "bt_max_per_symbol": 3,
+    "bt_max_spread_pct": 0.10,
     "alert_toggles": {
         "position_size": True,
         "bp": True,
@@ -125,6 +139,8 @@ class Settings:
             return self._coerce_nonneg_float(key, value)
         if key in NUMERIC_KEYS:
             return self._coerce_nonneg_float(key, value)
+        if key in INTEGER_KEYS:
+            return self._coerce_nonneg_int(key, value)
         if key in DEFAULTS:
             # Unknown behavior for non-numeric keys in DEFAULTS — pass through
             return value
@@ -151,6 +167,35 @@ class Settings:
         if f < 0:
             raise ValueError(f"{key}: must be >= 0 (got {f})")
         return f
+
+    @staticmethod
+    def _coerce_nonneg_int(key: str, value: Any) -> int:
+        """Coerce value to a non-negative int; reject bool, non-finite, non-whole, or negative."""
+        if isinstance(value, bool):
+            raise ValueError(f"{key}: expected int, got bool")
+        if isinstance(value, int):
+            i = value
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError(f"{key}: must be finite (got {value})")
+            if not value.is_integer():
+                raise ValueError(f"{key}: must be a whole number (got {value})")
+            i = int(value)
+        elif isinstance(value, str):
+            try:
+                f = float(value)
+            except ValueError as e:
+                raise ValueError(f"{key}: not a number ({value!r})") from e
+            if not math.isfinite(f):
+                raise ValueError(f"{key}: must be finite (got {f})")
+            if not f.is_integer():
+                raise ValueError(f"{key}: must be a whole number (got {f})")
+            i = int(f)
+        else:
+            raise ValueError(f"{key}: not a number ({value!r})")
+        if i < 0:
+            raise ValueError(f"{key}: must be >= 0 (got {i})")
+        return i
 
     @staticmethod
     def _apply_dotted(d: dict, dotted_key: str, value: Any) -> None:

@@ -42,6 +42,14 @@ class TestBestTradesArgparse(unittest.TestCase):
         args = self.parser.parse_args(["--best-trades", "--top", "7"])
         self.assertEqual(args.top, 7)
 
+    def test_top_negative_rejected_by_argparse(self):
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["--best-trades", "--top", "-1"])
+
+    def test_top_non_int_rejected_by_argparse(self):
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["--best-trades", "--top", "abc"])
+
     def test_format_choice_reused(self):
         args = self.parser.parse_args(["--best-trades", "--format", "json"])
         self.assertEqual(args.format, "json")

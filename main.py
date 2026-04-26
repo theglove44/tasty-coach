@@ -80,7 +80,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-delta", type=float, default=None, help="Minimum absolute short delta (default: 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Maximum absolute short delta (default: 0.45)")
     parser.add_argument("--best-trades", action="store_true", help="Rank best trade ideas across watchlists")
-    parser.add_argument("--top", type=int, default=3, help="Number of top ideas to surface (use with --best-trades, default: 3)")
+    parser.add_argument("--top", type=_nonneg_int, default=3, help="Number of top ideas to surface (use with --best-trades, default: 3)")
     parser.add_argument("--bt-watchlist", action="append", dest="bt_watchlist", metavar="NAME", help="Watchlist to include in --best-trades (repeatable; defaults: Chris Historical Trades, High Options Volume)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
     parser.add_argument("--debug", "-D", action="store_true", help="Enable debug logging")
@@ -93,6 +93,17 @@ def _warn_if_not_in_venv() -> None:
             "⚠️  You are not running inside the project venv. "
             "If you see import/type errors, run: source venv/bin/activate"
         )
+
+
+def _nonneg_int(value: str) -> int:
+    """Argparse type: parse a non-negative integer; raise ArgumentTypeError otherwise."""
+    try:
+        i = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"expected non-negative integer, got {value!r}")
+    if i < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {i}")
+    return i
 
 
 def _print_research_text(report: dict) -> None:
