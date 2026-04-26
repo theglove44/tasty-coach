@@ -1,12 +1,8 @@
-"""Watchlist-wide trade ranking orchestrator.
-
-Stub implementation for TCBT-2. Full pipeline is implemented across
-TCBT-3..11; this module currently returns a canonical empty result so the
-CLI and launcher entry points can be wired in isolation.
-"""
+"""Watchlist-wide trade ranking orchestrator."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
@@ -21,6 +17,8 @@ from agents.options_researcher import OptionsResearcherAgent
 from agents.portfolio import PortfolioAgent
 from agents.scanner import ScannerAgent
 from utils.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_WATCHLISTS: tuple[str, ...] = (
@@ -130,10 +128,14 @@ async def generate_candidates(
     if researcher is None:
         researcher = OptionsResearcherAgent(session)
 
-    for ctx in contexts:
+    total = len(contexts)
+    logger.info("researching %d symbols", total)
+    for i, ctx in enumerate(contexts, start=1):
+        logger.info("[%d/%d] %s", i, total, ctx.symbol)
         try:
             report = await researcher.research(ctx.symbol)
         except Exception as e:
+            logger.warning("[%d/%d] %s: research failed - %s", i, total, ctx.symbol, e)
             rejections.append(Rejection(symbol=ctx.symbol, reason="researcher_exception", detail=str(e)))
             continue
 
@@ -141,11 +143,14 @@ async def generate_candidates(
         if status != "OK":
             warnings = report.get("warnings") or []
             detail = warnings[0] if warnings else None
+            logger.info("[%d/%d] %s: %s", i, total, ctx.symbol, status)
             rejections.append(Rejection(symbol=ctx.symbol, reason=str(status), detail=detail))
             continue
 
         ideas = report.get("trade_ideas") or []
-        for idea in ideas[:max_per_symbol]:
+        accepted = ideas[:max_per_symbol]
+        logger.info("[%d/%d] %s: %d ideas", i, total, ctx.symbol, len(accepted))
+        for idea in accepted:
             candidates.append(_idea_to_candidate(ctx.symbol, idea, ctx))
 
     return (candidates, rejections)
@@ -373,12 +378,15 @@ async def run_best_trades(
         "account": None,
     }
 
+    logger.info("scanning watchlists: %s", resolved_watchlists)
     try:
         contexts, scan_warnings = await scan_watchlists(session, resolved_watchlists)
     except Exception as e:
+        logger.warning("watchlist scan failed: %s", e)
         result["warnings"].append(f"watchlist scan failed: {e}")
         return result
     result["warnings"].extend(scan_warnings)
+    logger.info("scan complete: %d symbols, %d warnings", len(contexts), len(scan_warnings))
     if not contexts:
         return result
 
@@ -386,6 +394,7 @@ async def run_best_trades(
 
     contexts, ivr_warnings = filter_by_ivr(contexts, thresholds["min_ivr"])
     result["warnings"].extend(ivr_warnings)
+    logger.info("after IVR>=%.0f prefilter: %d symbols remain", thresholds["min_ivr"], len(contexts))
     if not contexts:
         return result
 
@@ -400,6 +409,8 @@ async def run_best_trades(
     if not candidates:
         return result
 
+    logger.info("generated %d candidates from %d symbols", len(candidates), len(contexts))
+
     passing, gate_rejections = apply_quality_gates(
         candidates,
         blackout_days=thresholds["blackout_days"],
@@ -411,6 +422,7 @@ async def run_best_trades(
     )
     for r in gate_rejections:
         result["rejected"].append(_rejection_to_dict(r))
+    logger.info("after quality gates: %d passing, %d rejected", len(passing), len(gate_rejections))
 
     if not passing:
         return result
@@ -437,6 +449,7 @@ async def run_best_trades(
         )
         for r in account_rejections:
             result["rejected"].append(_rejection_to_dict(r))
+        logger.info("after account filters: %d passing, %d rejected", len(passing), len(account_rejections))
 
         if not passing:
             return result
@@ -444,6 +457,7 @@ async def run_best_trades(
     scored = score_candidates(passing, today=today, account_state=account_state)
     selected = _select_top_per_symbol(scored, top)
     result["top"] = [_candidate_to_dict(c) for c in selected]
+    logger.info("done: %d top trades selected from %d scored candidates", len(result["top"]), len(scored))
     return result
 
 
