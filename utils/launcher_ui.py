@@ -1071,21 +1071,21 @@ class LauncherUI:
                         if metric:
                             ivr.iv_rank = (
                                 float(metric.implied_volatility_index_rank) * 100
-                                if metric.implied_volatility_index_rank
+                                if metric.implied_volatility_index_rank is not None
                                 else None
                             )
                             ivr.iv_percentile = (
                                 float(metric.implied_volatility_percentile) * 100
-                                if metric.implied_volatility_percentile
+                                if metric.implied_volatility_percentile is not None
                                 else None
                             )
                             ivr.current_iv = (
                                 float(metric.implied_volatility_index)
-                                if metric.implied_volatility_index
+                                if metric.implied_volatility_index is not None
                                 else None
                             )
-                            ivr.beta = float(metric.beta) if metric.beta else None
-                            ivr.liquidity_rank = float(metric.liquidity_rank) if metric.liquidity_rank else None
+                            ivr.beta = float(metric.beta) if metric.beta is not None else None
+                            ivr.liquidity_rank = float(metric.liquidity_rank) if metric.liquidity_rank is not None else None
                             if metric.earnings and metric.earnings.expected_report_date:
                                 ivr.next_earnings_date = metric.earnings.expected_report_date.strftime("%m/%d")
                             ivr.has_options = True
