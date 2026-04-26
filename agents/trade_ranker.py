@@ -175,7 +175,11 @@ async def scan_watchlists(
     seen: set[str] = set()
     symbols: list[str] = []
     for name in names:
-        wl_symbols = await scanner.get_symbols_from_watchlist(name, equity_only=True)
+        try:
+            wl_symbols = await scanner.get_symbols_from_watchlist(name, equity_only=True)
+        except Exception as e:
+            warnings.append(f"watchlist '{name}' fetch failed: {e}")
+            continue
         if not wl_symbols:
             warnings.append(f"watchlist '{name}' not found or empty")
             continue
@@ -344,7 +348,11 @@ async def run_best_trades(
         "account": None,
     }
 
-    contexts, scan_warnings = await scan_watchlists(session, resolved_watchlists)
+    try:
+        contexts, scan_warnings = await scan_watchlists(session, resolved_watchlists)
+    except Exception as e:
+        result["warnings"].append(f"watchlist scan failed: {e}")
+        return result
     result["warnings"].extend(scan_warnings)
     if not contexts:
         return result

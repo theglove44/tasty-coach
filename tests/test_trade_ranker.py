@@ -264,6 +264,28 @@ class TestScanWatchlists(unittest.IsolatedAsyncioTestCase):
 
     @patch("agents.trade_ranker.get_market_metrics")
     @patch("agents.trade_ranker.get_market_data_by_type")
+    async def test_per_watchlist_fetch_failure_warns_does_not_crash(self, mock_prices, mock_metrics):
+        mock_metrics.return_value = []
+        mock_prices.return_value = []
+        scanner = MagicMock()
+        scanner.get_symbols_from_watchlist = AsyncMock(side_effect=[
+            RuntimeError("auth expired"),
+            ["AAPL"],
+        ])
+        mock_metrics.return_value = [_make_metric("AAPL")]
+        mock_prices.return_value = [_make_price("AAPL")]
+        session = MagicMock()
+        contexts, warnings = await scan_watchlists(
+            session, watchlists=["Bad", "Good"], scanner=scanner
+        )
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0].symbol, "AAPL")
+        self.assertEqual(len(warnings), 1)
+        self.assertTrue(warnings[0].startswith("watchlist 'Bad' fetch failed: "))
+        self.assertIn("auth expired", warnings[0])
+
+    @patch("agents.trade_ranker.get_market_metrics")
+    @patch("agents.trade_ranker.get_market_data_by_type")
     async def test_batch_failure_warns_does_not_crash(self, mock_prices, mock_metrics):
         mock_metrics.side_effect = RuntimeError("boom")
         scanner = MagicMock()
@@ -1376,6 +1398,16 @@ class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
         await run_best_trades(MagicMock(), watchlists=None)
         called_args = mock_scan.await_args
         self.assertEqual(called_args.args[1], list(DEFAULT_WATCHLISTS))
+
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_scan_failure_degrades_gracefully(self, mock_scan):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.side_effect = RuntimeError("api down")
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(result["top"], [])
+        self.assertEqual(result["rejected"], [])
+        self.assertIsNone(result["account"])
+        self.assertTrue(any("watchlist scan failed" in w and "api down" in w for w in result["warnings"]))
 
 
 if __name__ == "__main__":
