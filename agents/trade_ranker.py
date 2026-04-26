@@ -16,16 +16,17 @@ from tastytrade import Session
 from tastytrade.metrics import get_market_metrics
 from tastytrade.market_data import get_market_data_by_type
 
+from agents.manager import RiskManager
 from agents.options_researcher import OptionsResearcherAgent
+from agents.portfolio import PortfolioAgent
 from agents.scanner import ScannerAgent
+from utils.settings import settings
 
 
 DEFAULT_WATCHLISTS: tuple[str, ...] = (
     "Chris Historical Trades",
     "High Options Volume",
 )
-
-STUB_MARKER: str = "stub — full logic in TCBT-8/3/9/10/4/5/6/7"
 
 _BATCH_SIZE: int = 50
 
@@ -252,41 +253,214 @@ def _build_context(
     return ctx
 
 
+def _load_thresholds() -> dict[str, Any]:
+    """Read all 9 best-trades threshold settings into a single dict."""
+    return {
+        "blackout_days": settings.get("bt_earnings_blackout_days"),
+        "min_dte": settings.get("bt_min_dte"),
+        "max_dte": settings.get("bt_max_dte"),
+        "min_open_interest": settings.get("bt_min_open_interest"),
+        "max_spread_pct": settings.get("bt_max_spread_pct"),
+        "max_per_symbol": settings.get("bt_max_per_symbol"),
+        "max_pct_nlv_per_trade": settings.get("bt_max_pct_nlv_per_trade"),
+        "bp_cap_for_new": settings.get("bt_bp_cap_for_new"),
+        "concentration_block_pct": settings.get("bt_concentration_overlap_block_pct"),
+    }
+
+
+def _select_top_per_symbol(candidates: list[Candidate], top: int) -> list[Candidate]:
+    """Best score per symbol, sorted by (score desc, symbol asc), capped at `top`."""
+    if not candidates or top <= 0:
+        return []
+    best_per_symbol: dict[str, Candidate] = {}
+    for c in candidates:
+        existing = best_per_symbol.get(c.symbol)
+        if existing is None or c.score > existing.score:
+            best_per_symbol[c.symbol] = c
+    ranked = sorted(
+        best_per_symbol.values(),
+        key=lambda c: (-c.score, c.symbol),
+    )
+    return ranked[:top]
+
+
+def _rejection_to_dict(r: Rejection) -> dict[str, Any]:
+    """Serialize a Rejection to a JSON-safe dict."""
+    return {
+        "symbol": r.symbol,
+        "reason": r.reason,
+        "detail": r.detail,
+    }
+
+
+def _candidate_to_dict(c: Candidate) -> dict[str, Any]:
+    """Serialize a Candidate to a JSON-safe dict for the top-trades output."""
+    return {
+        "symbol": c.symbol,
+        "structure": c.structure,
+        "expiration": c.expiration.isoformat() if hasattr(c.expiration, "isoformat") else str(c.expiration),
+        "dte": c.dte,
+        "credit": float(c.credit),
+        "max_loss": float(c.max_loss),
+        "short_delta": float(c.short_delta),
+        "breakevens": [float(b) for b in c.breakevens],
+        "score": float(c.score),
+        "score_breakdown": dict(c.score_breakdown) if c.score_breakdown else {},
+        "summary_reason": c.summary_reason or "",
+    }
+
+
+async def _build_account_state(session: Session, account_number: str) -> AccountState:
+    """Build AccountState from RiskManager + PortfolioAgent (existing_exposures={} for v1)."""
+    risk_manager = RiskManager(session, account_number)
+    report = await risk_manager.calculate_portfolio_risk()
+    nlv = float(report["nlv"])
+    bp_usage_pct = float(report["bp_usage_pct"]) / 100.0
+    portfolio_agent = await PortfolioAgent(session, account_number).init()
+    _positions = await portfolio_agent.get_positions()
+    return AccountState(
+        nlv=nlv,
+        bp_usage_pct=bp_usage_pct,
+        existing_exposures={},
+    )
+
+
 async def run_best_trades(
     session: Session,
     *,
     watchlists: Optional[Sequence[str]] = None,
     top: int = 3,
     output_format: str = "text",
+    account_number: Optional[str] = None,
+    today: Optional[date] = None,
 ) -> dict[str, Any]:
-    """Rank trade ideas across watchlists; stub returns an empty canonical result."""
-    resolved = list(watchlists) if watchlists is not None else list(DEFAULT_WATCHLISTS)
-    return {
+    """Run the full Best-Trades pipeline and return a canonical result dict."""
+    resolved_watchlists = list(watchlists) if watchlists is not None else list(DEFAULT_WATCHLISTS)
+    result: dict[str, Any] = {
         "top": [],
         "rejected": [],
         "warnings": [],
-        "watchlists": resolved,
+        "watchlists": resolved_watchlists,
+        "account": None,
     }
+
+    contexts, scan_warnings = await scan_watchlists(session, resolved_watchlists)
+    result["warnings"].extend(scan_warnings)
+    if not contexts:
+        return result
+
+    thresholds = _load_thresholds()
+
+    candidates, gen_rejections = await generate_candidates(
+        session,
+        contexts,
+        max_per_symbol=thresholds["max_per_symbol"],
+    )
+    for r in gen_rejections:
+        result["rejected"].append(_rejection_to_dict(r))
+
+    if not candidates:
+        return result
+
+    passing, gate_rejections = apply_quality_gates(
+        candidates,
+        blackout_days=thresholds["blackout_days"],
+        min_dte=thresholds["min_dte"],
+        max_dte=thresholds["max_dte"],
+        min_open_interest=thresholds["min_open_interest"],
+        max_spread_pct=thresholds["max_spread_pct"],
+        today=today,
+    )
+    for r in gate_rejections:
+        result["rejected"].append(_rejection_to_dict(r))
+
+    if not passing:
+        return result
+
+    account_state: Optional[AccountState] = None
+    if account_number is not None:
+        try:
+            account_state = await _build_account_state(session, account_number)
+            result["account"] = {
+                "nlv": account_state.nlv,
+                "bp_usage_pct": account_state.bp_usage_pct,
+            }
+        except Exception as e:
+            result["warnings"].append(f"account state unavailable: {e}")
+            account_state = None
+
+    if account_state is not None:
+        passing, account_rejections = apply_account_filters(
+            passing,
+            account_state,
+            max_pct_nlv_per_trade=thresholds["max_pct_nlv_per_trade"],
+            bp_cap_for_new=thresholds["bp_cap_for_new"],
+            concentration_block_pct=thresholds["concentration_block_pct"],
+        )
+        for r in account_rejections:
+            result["rejected"].append(_rejection_to_dict(r))
+
+        if not passing:
+            return result
+
+    scored = score_candidates(passing, today=today, account_state=account_state)
+    selected = _select_top_per_symbol(scored, top)
+    result["top"] = [_candidate_to_dict(c) for c in selected]
+    return result
 
 
 def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
-    """Print a best-trades result dict in human-readable form including the stub marker."""
+    """Print a best-trades result dict in human-readable text form."""
+    watchlists = result.get("watchlists") or []
+    print(f"=== Best Trades Today (top {top}) ===")
+    if watchlists:
+        print(f"Watchlists: {', '.join(watchlists)}")
+
+    account = result.get("account")
+    if account is not None:
+        nlv = account.get("nlv", 0.0)
+        bp = account.get("bp_usage_pct", 0.0)
+        print(f"Account: NLV ${nlv:,.0f}, BP usage {bp * 100:.1f}%")
+
+    top_items = result.get("top") or []
     print()
-    print("=" * 80)
-    print(f"Best Trades Today  ({STUB_MARKER})")
-    print("=" * 80)
-    watchlists = result["watchlists"]
-    print(f"Watchlists: {', '.join(watchlists) if watchlists else '(none)'}")
-    print(f"Top requested: {top}")
-    print(f"Ranked: {len(result['top'])}   Rejected: {len(result['rejected'])}   Warnings: {len(result['warnings'])}")
-    if not result["top"]:
+    if not top_items:
+        print("No trades passed all gates today.")
+    else:
+        for idx, item in enumerate(top_items, start=1):
+            symbol = item.get("symbol", "?")
+            structure = item.get("structure", "?")
+            expiration = item.get("expiration", "?")
+            dte = item.get("dte", 0)
+            credit = item.get("credit", 0.0)
+            max_loss = item.get("max_loss", 0.0)
+            score = item.get("score", 0.0)
+            summary = item.get("summary_reason", "")
+            breakdown = item.get("score_breakdown") or {}
+            print(f"[{idx}] {symbol} {structure} {expiration} ({dte} DTE)")
+            print(f"    Credit ${credit:.2f} / Max risk ${max_loss:.0f}")
+            print(f"    Score: {score:.1f}/100 — {summary}")
+            if breakdown:
+                parts = [f"{k} {float(v):.1f}" for k, v in breakdown.items()]
+                print(f"    Breakdown: {', '.join(parts)}")
+
+    rejected = result.get("rejected") or []
+    if rejected:
+        counts: dict[str, int] = {}
+        for r in rejected:
+            reason = r.get("reason", "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
         print()
-        print("No trade ideas yet — orchestrator stub. Implementation lands in TCBT-3..11.")
-    if result["warnings"]:
+        print("Rejection summary:")
+        for reason, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"  {reason}: {n}")
+
+    warnings = result.get("warnings") or []
+    if warnings:
         print()
         print("Warnings:")
-        for w in result["warnings"]:
-            print(f"  • {w}")
+        for w in warnings:
+            print(f"  - {w}")
 
 
 def _check_earnings_blackout(candidate: Candidate, blackout_days: int, today: date) -> Optional[Rejection]:

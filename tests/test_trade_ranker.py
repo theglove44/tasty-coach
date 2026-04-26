@@ -1019,5 +1019,364 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         self.assertEqual(scored.score_breakdown["concentration_penalty"], 0.0)
 
 
+def _mk_top_candidate(symbol: str, score: float, structure: str = "BULL_PUT_SPREAD") -> Candidate:
+    """Build a minimal Candidate for top-selection tests."""
+    return Candidate(
+        symbol=symbol,
+        structure=structure,
+        expiration=date(2026, 6, 19),
+        dte=45,
+        width=5.0,
+        credit=1.50,
+        max_loss=350.0,
+        credit_pct_of_width=0.30,
+        short_delta=0.20,
+        pop_estimate=0.75,
+        breakevens=[148.50],
+        net_greeks={},
+        legs=[],
+        researcher_score=80.0,
+        researcher_score_breakdown={},
+        context=SymbolContext(symbol=symbol),
+        score=score,
+        score_breakdown={"liquidity": score * 0.4},
+        summary_reason=f"{symbol} test",
+    )
+
+
+class TestSelectTopPerSymbol(unittest.TestCase):
+    """Tests for _select_top_per_symbol helper."""
+
+    def test_select_top_empty_returns_empty(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        self.assertEqual(_select_top_per_symbol([], 3), [])
+
+    def test_select_top_one_per_symbol(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        candidates = [_mk_top_candidate("A", 90), _mk_top_candidate("B", 80), _mk_top_candidate("C", 70)]
+        result = _select_top_per_symbol(candidates, 3)
+        self.assertEqual([c.symbol for c in result], ["A", "B", "C"])
+
+    def test_select_top_picks_max_score_within_symbol(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        candidates = [
+            _mk_top_candidate("A", 60),
+            _mk_top_candidate("A", 90),
+            _mk_top_candidate("B", 70),
+        ]
+        result = _select_top_per_symbol(candidates, 3)
+        self.assertEqual(len(result), 2)
+        symbols_to_scores = {c.symbol: c.score for c in result}
+        self.assertEqual(symbols_to_scores["A"], 90)
+        self.assertEqual(symbols_to_scores["B"], 70)
+
+    def test_select_top_caps_at_n(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        candidates = [_mk_top_candidate(s, 90 - i * 10) for i, s in enumerate(["A", "B", "C", "D", "E"])]
+        result = _select_top_per_symbol(candidates, 3)
+        self.assertEqual(len(result), 3)
+        self.assertEqual([c.symbol for c in result], ["A", "B", "C"])
+
+    def test_select_top_sorts_by_score_desc_with_symbol_tiebreak(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        candidates = [_mk_top_candidate("C", 80), _mk_top_candidate("A", 80), _mk_top_candidate("B", 80)]
+        result = _select_top_per_symbol(candidates, 3)
+        self.assertEqual([c.symbol for c in result], ["A", "B", "C"])
+
+    def test_select_top_zero_returns_empty(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        candidates = [_mk_top_candidate("A", 90)]
+        self.assertEqual(_select_top_per_symbol(candidates, 0), [])
+
+    def test_select_top_negative_returns_empty(self):
+        from agents.trade_ranker import _select_top_per_symbol
+        candidates = [_mk_top_candidate("A", 90)]
+        self.assertEqual(_select_top_per_symbol(candidates, -1), [])
+
+
+class TestLoadThresholds(unittest.TestCase):
+    """Tests for _load_thresholds helper."""
+
+    @patch("agents.trade_ranker.settings")
+    def test_load_thresholds_returns_all_nine_keys(self, mock_settings):
+        from agents.trade_ranker import _load_thresholds
+        mock_settings.get.side_effect = lambda key: f"value_for_{key}"
+        result = _load_thresholds()
+        self.assertEqual(
+            set(result.keys()),
+            {
+                "blackout_days",
+                "min_dte",
+                "max_dte",
+                "min_open_interest",
+                "max_spread_pct",
+                "max_per_symbol",
+                "max_pct_nlv_per_trade",
+                "bp_cap_for_new",
+                "concentration_block_pct",
+            },
+        )
+        expected_calls = [
+            "bt_earnings_blackout_days",
+            "bt_min_dte",
+            "bt_max_dte",
+            "bt_min_open_interest",
+            "bt_max_spread_pct",
+            "bt_max_per_symbol",
+            "bt_max_pct_nlv_per_trade",
+            "bt_bp_cap_for_new",
+            "bt_concentration_overlap_block_pct",
+        ]
+        actual_calls = [call.args[0] for call in mock_settings.get.call_args_list]
+        self.assertEqual(set(actual_calls), set(expected_calls))
+
+
+class TestRunBestTradesIntegration(unittest.IsolatedAsyncioTestCase):
+    """End-to-end pipeline tests for run_best_trades."""
+
+    @staticmethod
+    def _passing_candidate(symbol: str = "AAPL", score: float = 0.0) -> Candidate:
+        return _mk_top_candidate(symbol, score)
+
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_empty_scan_returns_no_trades(self, mock_scan):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], ["no symbols"])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(result["top"], [])
+        self.assertEqual(result["rejected"], [])
+        self.assertEqual(result["warnings"], ["no symbols"])
+        self.assertIsNone(result["account"])
+
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_no_candidates_returns_no_trades(self, mock_scan, mock_gen):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_gen.return_value = ([], [Rejection(symbol="AAPL", reason="no_chains", detail="none")])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(result["top"], [])
+        self.assertEqual(len(result["rejected"]), 1)
+        self.assertEqual(result["rejected"][0]["reason"], "no_chains")
+
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_all_rejected_by_gates_returns_no_trades(self, mock_scan, mock_gen, mock_gates):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate()
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([], [Rejection(symbol="AAPL", reason="earnings_blackout", detail="2 days")])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(result["top"], [])
+        self.assertEqual(result["rejected"][0]["reason"], "earnings_blackout")
+
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_basic_pipeline_returns_scored_top(self, mock_scan, mock_gen, mock_gates):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(len(result["top"]), 1)
+        self.assertEqual(result["top"][0]["symbol"], "AAPL")
+        self.assertIsNone(result["account"])
+        self.assertIsInstance(result["top"][0]["score"], float)
+
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_top_selection_dedupes_by_symbol(self, mock_scan, mock_gen, mock_gates):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        c1 = self._passing_candidate("AAPL", 60.0)
+        c2 = self._passing_candidate("AAPL", 90.0)
+        c3 = self._passing_candidate("AAPL", 70.0)
+        mock_gen.return_value = ([c1, c2, c3], [])
+        mock_gates.return_value = ([c1, c2, c3], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(len(result["top"]), 1)
+        self.assertEqual(result["top"][0]["symbol"], "AAPL")
+
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_top_selection_caps_at_n(self, mock_scan, mock_gen, mock_gates):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidates = [self._passing_candidate(s, 100 - i * 10) for i, s in enumerate(["A", "B", "C", "D", "E"])]
+        mock_gen.return_value = (candidates, [])
+        mock_gates.return_value = (candidates, [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"], top=3)
+        self.assertEqual(len(result["top"]), 3)
+
+    @patch("agents.trade_ranker.score_candidates")
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_top_selection_sorts_by_score_descending(self, mock_scan, mock_gen, mock_gates, mock_score):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidates = [self._passing_candidate(s, 50) for s in ["X", "Y", "Z"]]
+        mock_gen.return_value = (candidates, [])
+        mock_gates.return_value = (candidates, [])
+        mock_score.return_value = [
+            self._passing_candidate("X", 10),
+            self._passing_candidate("Y", 90),
+            self._passing_candidate("Z", 50),
+        ]
+        result = await run_best_trades(MagicMock(), watchlists=["W"])
+        self.assertEqual([t["symbol"] for t in result["top"]], ["Y", "Z", "X"])
+
+    @patch("agents.trade_ranker.score_candidates")
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_top_selection_tie_breaks_by_symbol_ascending(self, mock_scan, mock_gen, mock_gates, mock_score):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidates = [self._passing_candidate(s, 75) for s in ["B", "A", "C"]]
+        mock_gen.return_value = (candidates, [])
+        mock_gates.return_value = (candidates, [])
+        mock_score.return_value = [
+            self._passing_candidate("B", 75),
+            self._passing_candidate("A", 75),
+            self._passing_candidate("C", 75),
+        ]
+        result = await run_best_trades(MagicMock(), watchlists=["W"])
+        self.assertEqual([t["symbol"] for t in result["top"]], ["A", "B", "C"])
+
+    @patch("agents.trade_ranker._build_account_state", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.apply_account_filters")
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_account_state_provided_runs_account_filters(
+        self, mock_scan, mock_gen, mock_gates, mock_account_filters, mock_build_state
+    ):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        mock_state = AccountState(nlv=50000.0, bp_usage_pct=0.30, existing_exposures={})
+        mock_build_state.return_value = mock_state
+        mock_account_filters.return_value = ([candidate], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"], account_number="ABC123")
+        mock_account_filters.assert_called_once()
+        args, kwargs = mock_account_filters.call_args
+        self.assertEqual(args[1], mock_state)
+        self.assertEqual(result["account"], {"nlv": 50000.0, "bp_usage_pct": 0.30})
+
+    @patch("agents.trade_ranker.apply_account_filters")
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_account_state_skipped_when_no_account_number(
+        self, mock_scan, mock_gen, mock_gates, mock_account_filters
+    ):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"], account_number=None)
+        mock_account_filters.assert_not_called()
+        self.assertIsNone(result["account"])
+
+    @patch("agents.trade_ranker._build_account_state", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.apply_account_filters")
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_build_account_state_failure_degrades_gracefully(
+        self, mock_scan, mock_gen, mock_gates, mock_account_filters, mock_build_state
+    ):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        mock_build_state.side_effect = RuntimeError("api down")
+        result = await run_best_trades(MagicMock(), watchlists=["X"], account_number="ABC123")
+        mock_account_filters.assert_not_called()
+        self.assertIsNone(result["account"])
+        self.assertTrue(any("account state unavailable" in w and "api down" in w for w in result["warnings"]))
+        self.assertEqual(len(result["top"]), 1)
+
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_result_shape_has_canonical_keys(self, mock_scan, mock_gen, mock_gates):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertGreaterEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists", "account"})
+
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_rejected_items_have_symbol_reason_detail_only(self, mock_scan, mock_gen):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        mock_gen.return_value = ([], [Rejection(symbol="AAPL", reason="no_chains", detail="none")])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        for item in result["rejected"]:
+            self.assertEqual(set(item.keys()), {"symbol", "reason", "detail"})
+
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_warnings_aggregated_from_scan(self, mock_scan):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([], ["w1", "w2"])
+        result = await run_best_trades(MagicMock(), watchlists=["X"])
+        self.assertEqual(result["warnings"], ["w1", "w2"])
+
+    @patch("agents.trade_ranker.score_candidates")
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_today_parameter_threaded_to_gates_and_scoring(
+        self, mock_scan, mock_gen, mock_gates, mock_score
+    ):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        mock_score.return_value = [candidate]
+        target_date = date(2026, 5, 1)
+        await run_best_trades(MagicMock(), watchlists=["X"], today=target_date)
+        gates_kwargs = mock_gates.call_args.kwargs
+        self.assertEqual(gates_kwargs["today"], target_date)
+        score_kwargs = mock_score.call_args.kwargs
+        self.assertEqual(score_kwargs["today"], target_date)
+
+    @patch("agents.trade_ranker.apply_quality_gates")
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_top_zero_returns_empty_top(self, mock_scan, mock_gen, mock_gates):
+        from agents.trade_ranker import run_best_trades
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL")], [])
+        candidate = self._passing_candidate("AAPL", 75.0)
+        mock_gen.return_value = ([candidate], [])
+        mock_gates.return_value = ([candidate], [])
+        result = await run_best_trades(MagicMock(), watchlists=["X"], top=0)
+        self.assertEqual(result["top"], [])
+
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_default_watchlists_used_when_none(self, mock_scan):
+        from agents.trade_ranker import run_best_trades, DEFAULT_WATCHLISTS
+        mock_scan.return_value = ([], [])
+        await run_best_trades(MagicMock(), watchlists=None)
+        called_args = mock_scan.await_args
+        self.assertEqual(called_args.args[1], list(DEFAULT_WATCHLISTS))
+
+
 if __name__ == "__main__":
     unittest.main()
