@@ -268,5 +268,66 @@ class TestDecimalSettingFallback(unittest.TestCase):
                 manager_mod.settings = original
 
 
+class TestCoerceNonnegInt(unittest.TestCase):
+    """Direct tests for Settings._coerce_nonneg_int."""
+
+    def test_int_passes_through(self):
+        self.assertEqual(Settings._coerce_nonneg_int("k", 5), 5)
+
+    def test_string_int_coerces(self):
+        self.assertEqual(Settings._coerce_nonneg_int("k", "3"), 3)
+
+    def test_whole_float_coerces(self):
+        self.assertEqual(Settings._coerce_nonneg_int("k", 1.0), 1)
+
+    def test_negative_int_rejected(self):
+        with self.assertRaises(ValueError):
+            Settings._coerce_nonneg_int("k", -1)
+
+    def test_non_whole_float_rejected(self):
+        with self.assertRaises(ValueError):
+            Settings._coerce_nonneg_int("k", 1.5)
+
+    def test_non_numeric_string_rejected(self):
+        with self.assertRaises(ValueError):
+            Settings._coerce_nonneg_int("k", "abc")
+
+    def test_bool_rejected(self):
+        with self.assertRaises(ValueError):
+            Settings._coerce_nonneg_int("k", True)
+
+    def test_none_rejected(self):
+        with self.assertRaises(ValueError):
+            Settings._coerce_nonneg_int("k", None)
+
+
+class TestBestTradesSettingsRoundTrip(unittest.TestCase):
+    """Round-trip new bt_* keys through Settings.set/get."""
+
+    def test_bt_earnings_blackout_days_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_earnings_blackout_days", 5)
+            self.assertEqual(s.get("bt_earnings_blackout_days"), 5)
+
+    def test_bt_min_dte_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_min_dte", 30)
+            self.assertEqual(s.get("bt_min_dte"), 30)
+
+    def test_bt_max_per_symbol_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_max_per_symbol", 2)
+            self.assertEqual(s.get("bt_max_per_symbol"), 2)
+
+    def test_bt_max_spread_pct_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_max_spread_pct", 0.05)
+            self.assertEqual(s.get("bt_max_spread_pct"), 0.05)
+
+
 if __name__ == "__main__":
     unittest.main()
