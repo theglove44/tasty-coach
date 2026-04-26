@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -117,8 +118,15 @@ async def generate_candidates(
     *,
     researcher: Optional[OptionsResearcherAgent] = None,
     max_per_symbol: int = 3,
+    concurrency: int = 1,
+    timeout_seconds: Optional[float] = None,
 ) -> tuple[list[Candidate], list[Rejection]]:
-    """For each SymbolContext, call OptionsResearcherAgent.research; return candidates + rejections."""
+    """For each SymbolContext, call OptionsResearcherAgent.research; return candidates + rejections.
+
+    `concurrency` caps simultaneous research calls (default 1 = sequential).
+    `timeout_seconds` applies a per-symbol hard cap; on timeout the symbol becomes a
+    research_timeout rejection instead of blocking the run.
+    """
     candidates: list[Candidate] = []
     rejections: list[Rejection] = []
 
@@ -129,27 +137,58 @@ async def generate_candidates(
         researcher = OptionsResearcherAgent(session)
 
     total = len(contexts)
-    logger.info("researching %d symbols", total)
-    for i, ctx in enumerate(contexts, start=1):
-        logger.info("[%d/%d] %s", i, total, ctx.symbol)
-        try:
-            report = await researcher.research(ctx.symbol)
-        except Exception as e:
-            logger.warning("[%d/%d] %s: research failed - %s", i, total, ctx.symbol, e)
-            rejections.append(Rejection(symbol=ctx.symbol, reason="researcher_exception", detail=str(e)))
-            continue
+    logger.info(
+        "researching %d symbols (concurrency=%d, timeout=%s)",
+        total,
+        concurrency,
+        f"{timeout_seconds}s" if timeout_seconds is not None else "none",
+    )
+    semaphore = asyncio.Semaphore(max(1, concurrency))
 
+    async def research_one(idx: int, ctx: SymbolContext):
+        async with semaphore:
+            logger.info("[%d/%d] %s", idx, total, ctx.symbol)
+            try:
+                if timeout_seconds is not None:
+                    report = await asyncio.wait_for(
+                        researcher.research(ctx.symbol),
+                        timeout=timeout_seconds,
+                    )
+                else:
+                    report = await researcher.research(ctx.symbol)
+            except asyncio.TimeoutError:
+                logger.warning("[%d/%d] %s: timed out after %ss", idx, total, ctx.symbol, timeout_seconds)
+                return ctx, None, Rejection(
+                    symbol=ctx.symbol,
+                    reason="research_timeout",
+                    detail=f"exceeded {timeout_seconds}s",
+                )
+            except Exception as e:
+                logger.warning("[%d/%d] %s: research failed - %s", idx, total, ctx.symbol, e)
+                return ctx, None, Rejection(
+                    symbol=ctx.symbol,
+                    reason="researcher_exception",
+                    detail=str(e),
+                )
+            return ctx, report, None
+
+    tasks = [research_one(i + 1, ctx) for i, ctx in enumerate(contexts)]
+    results = await asyncio.gather(*tasks)
+
+    for ctx, report, rejection in results:
+        if rejection is not None:
+            rejections.append(rejection)
+            continue
         status = report.get("status")
         if status != "OK":
             warnings = report.get("warnings") or []
             detail = warnings[0] if warnings else None
-            logger.info("[%d/%d] %s: %s", i, total, ctx.symbol, status)
+            logger.info("%s: %s", ctx.symbol, status)
             rejections.append(Rejection(symbol=ctx.symbol, reason=str(status), detail=detail))
             continue
-
         ideas = report.get("trade_ideas") or []
         accepted = ideas[:max_per_symbol]
-        logger.info("[%d/%d] %s: %d ideas", i, total, ctx.symbol, len(accepted))
+        logger.info("%s: %d ideas", ctx.symbol, len(accepted))
         for idea in accepted:
             candidates.append(_idea_to_candidate(ctx.symbol, idea, ctx))
 
@@ -275,6 +314,8 @@ def _load_thresholds() -> dict[str, Any]:
         "bp_cap_for_new": settings.get("bt_bp_cap_for_new"),
         "concentration_block_pct": settings.get("bt_concentration_overlap_block_pct"),
         "min_ivr": settings.get("bt_min_ivr"),
+        "research_concurrency": settings.get("bt_research_concurrency"),
+        "research_timeout_seconds": settings.get("bt_research_timeout_seconds"),
     }
 
 
@@ -402,6 +443,8 @@ async def run_best_trades(
         session,
         contexts,
         max_per_symbol=thresholds["max_per_symbol"],
+        concurrency=thresholds["research_concurrency"],
+        timeout_seconds=thresholds["research_timeout_seconds"],
     )
     for r in gen_rejections:
         result["rejected"].append(_rejection_to_dict(r))
