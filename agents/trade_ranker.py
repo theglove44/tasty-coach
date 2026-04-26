@@ -76,6 +76,19 @@ class Rejection:
     detail: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class AccountState:
+    """Snapshot of live account state used by the account-aware ranking layer.
+
+    Built once per `run_best_trades` invocation and passed into
+    `apply_account_filters` and `score_candidate(s)`. Floats (not Decimals)
+    so scoring math stays uniform with the rest of `trade_ranker`.
+    """
+    nlv: float
+    bp_usage_pct: float
+    existing_exposures: dict[str, float] = field(default_factory=dict)
+
+
 def _idea_to_candidate(symbol: str, idea: dict[str, Any], context: SymbolContext) -> Candidate:
     """Translate a researcher trade_ideas dict into a Candidate, preserving the source SymbolContext."""
     expiration = date.fromisoformat(idea["expiration"])
@@ -396,6 +409,77 @@ def apply_quality_gates(
     return (passing, rejections)
 
 
+def apply_account_filters(
+    candidates: list[Candidate],
+    account_state: AccountState,
+    *,
+    max_pct_nlv_per_trade: float,
+    bp_cap_for_new: float,
+    concentration_block_pct: float,
+) -> tuple[list[Candidate], list[Rejection]]:
+    """Hard-reject candidates that worsen account state beyond configured caps."""
+    survivors: list[Candidate] = []
+    rejections: list[Rejection] = []
+
+    nlv = account_state.nlv
+    bp_usage = account_state.bp_usage_pct
+    exposures = account_state.existing_exposures
+
+    if nlv <= 0:
+        for c in candidates:
+            rejections.append(Rejection(
+                symbol=c.symbol,
+                reason="non_positive_nlv",
+                detail=f"NLV ${nlv:.0f} is non-positive; cannot evaluate account fit",
+            ))
+        return survivors, rejections
+
+    for c in candidates:
+        size_pct = c.max_loss / nlv
+
+        if size_pct > max_pct_nlv_per_trade:
+            rejections.append(Rejection(
+                symbol=c.symbol,
+                reason="oversized_vs_nlv",
+                detail=(
+                    f"max_loss ${c.max_loss:.0f} = "
+                    f"{size_pct * 100:.1f}% NLV above cap "
+                    f"{max_pct_nlv_per_trade * 100:.1f}%"
+                ),
+            ))
+            continue
+
+        post_bp = bp_usage + size_pct
+        if post_bp > bp_cap_for_new:
+            rejections.append(Rejection(
+                symbol=c.symbol,
+                reason="bp_over_cap",
+                detail=(
+                    f"post-trade BP {post_bp * 100:.1f}% above cap "
+                    f"{bp_cap_for_new * 100:.1f}%"
+                ),
+            ))
+            continue
+
+        existing = exposures.get(c.symbol, 0.0)
+        post_exposure_pct = (existing + c.max_loss) / nlv
+        if post_exposure_pct > concentration_block_pct:
+            rejections.append(Rejection(
+                symbol=c.symbol,
+                reason="concentration_overlap",
+                detail=(
+                    f"{c.symbol} exposure ${existing:.0f} + ${c.max_loss:.0f} = "
+                    f"{post_exposure_pct * 100:.1f}% NLV above cap "
+                    f"{concentration_block_pct * 100:.1f}%"
+                ),
+            ))
+            continue
+
+        survivors.append(c)
+
+    return survivors, rejections
+
+
 _WEIGHT_REGIME_FIT: float = 15.0
 _WEIGHT_LIQUIDITY: float = 20.0
 _WEIGHT_VOLATILITY_EDGE: float = 25.0
@@ -473,14 +557,27 @@ def _score_structure_quality(candidate: Candidate) -> float:
     return _WEIGHT_STRUCTURE_QUALITY * (0.5 * delta_factor + 0.5 * credit_width_factor)
 
 
-def _score_account_fit(candidate: Candidate) -> float:
-    """Placeholder (TCBT-4 wires real logic): always returns 10.0."""
-    return _WEIGHT_ACCOUNT_FIT
+def _score_account_fit(
+    candidate: Candidate,
+    account_state: Optional[AccountState] = None,
+) -> float:
+    """Score 0..10 for trade-size fit; placeholder 10.0 when account_state is None or NLV non-positive."""
+    if account_state is None or account_state.nlv <= 0:
+        return _WEIGHT_ACCOUNT_FIT
+    pct = candidate.max_loss / account_state.nlv
+    return max(0.0, min(10.0, 10.0 * (0.05 - pct) / 0.03))
 
 
-def _score_concentration_penalty(candidate: Candidate) -> float:
-    """Placeholder (TCBT-4 wires real logic): always returns 0.0 (positive penalty value)."""
-    return 0.0
+def _score_concentration_penalty(
+    candidate: Candidate,
+    account_state: Optional[AccountState] = None,
+) -> float:
+    """Subtractive penalty 0..10 for concentration; placeholder 0.0 when account_state is None or NLV non-positive."""
+    if account_state is None or account_state.nlv <= 0:
+        return 0.0
+    existing = account_state.existing_exposures.get(candidate.symbol, 0.0)
+    post_trade_pct = (existing + candidate.max_loss) / account_state.nlv
+    return max(0.0, min(10.0, 10.0 * (post_trade_pct - 0.05) / 0.20))
 
 
 def _format_summary_reason(
@@ -543,6 +640,7 @@ def score_candidate(
     candidate: Candidate,
     *,
     today: Optional[date] = None,
+    account_state: Optional[AccountState] = None,
 ) -> Candidate:
     """Return a new Candidate with score, score_breakdown, and summary_reason populated."""
     if today is None:
@@ -553,8 +651,8 @@ def score_candidate(
     vol_edge = _score_volatility_edge(candidate)
     event = _score_event_risk(candidate, today)
     structure = _score_structure_quality(candidate)
-    account = _score_account_fit(candidate)
-    penalty = _score_concentration_penalty(candidate)
+    account = _score_account_fit(candidate, account_state)
+    penalty = _score_concentration_penalty(candidate, account_state)
 
     breakdown: dict[str, float] = {
         "regime_fit": regime,
@@ -583,8 +681,9 @@ def score_candidates(
     candidates: list[Candidate],
     *,
     today: Optional[date] = None,
+    account_state: Optional[AccountState] = None,
 ) -> list[Candidate]:
     """Score each candidate; preserve input order; pure (returns new list of new Candidates)."""
     if today is None:
         today = date.today()
-    return [score_candidate(c, today=today) for c in candidates]
+    return [score_candidate(c, today=today, account_state=account_state) for c in candidates]

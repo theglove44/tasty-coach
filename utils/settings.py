@@ -14,6 +14,9 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
     "bp_usage_block",
     "concentration_pct_nlv_warn",
     "bt_max_spread_pct",
+    "bt_max_pct_nlv_per_trade",
+    "bt_bp_cap_for_new",
+    "bt_concentration_overlap_block_pct",
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
@@ -38,6 +41,9 @@ DEFAULTS: dict[str, Any] = {
     "bt_min_open_interest": 200,
     "bt_max_per_symbol": 3,
     "bt_max_spread_pct": 0.10,
+    "bt_max_pct_nlv_per_trade": 0.05,
+    "bt_bp_cap_for_new": 0.50,
+    "bt_concentration_overlap_block_pct": 0.25,
     "alert_toggles": {
         "position_size": True,
         "bp": True,

@@ -7,6 +7,7 @@ from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.trade_ranker import (
+    AccountState,
     Candidate,
     Rejection,
     SymbolContext,
@@ -16,6 +17,9 @@ from agents.trade_ranker import (
     _check_earnings_blackout,
     _check_open_interest,
     _check_spread,
+    _score_account_fit,
+    _score_concentration_penalty,
+    apply_account_filters,
     apply_quality_gates,
     generate_candidates,
     scan_watchlists,
@@ -839,6 +843,180 @@ class TestScoring(unittest.TestCase):
         scored = score_candidate(c, today=self._TODAY)
         self.assertLessEqual(scored.score, 100.0)
         self.assertAlmostEqual(scored.score, 100.0, places=2)
+
+
+class TestAccountFiltersAndScoring(unittest.TestCase):
+    """Tests for apply_account_filters and account-aware scoring (TCBT-4)."""
+
+    DEFAULT_FILTERS = dict(
+        max_pct_nlv_per_trade=0.05,
+        bp_cap_for_new=0.50,
+        concentration_block_pct=0.25,
+    )
+
+    @staticmethod
+    def _state(nlv=20000.0, bp_usage_pct=0.20, exposures=None):
+        return AccountState(nlv=nlv, bp_usage_pct=bp_usage_pct, existing_exposures=exposures or {})
+
+    def test_passing_candidate_survives_all_account_filters(self):
+        c = _make_candidate(symbol="AAPL", max_loss=200.0)
+        survivors, rejections = apply_account_filters([c], self._state(), **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [c])
+        self.assertEqual(rejections, [])
+
+    def test_oversized_vs_nlv_rejected(self):
+        c = _make_candidate(symbol="AAPL", max_loss=2000.0)
+        survivors, rejections = apply_account_filters([c], self._state(), **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(rejections[0].reason, "oversized_vs_nlv")
+        self.assertIn("10.0% NLV above cap 5.0%", rejections[0].detail)
+
+    def test_bp_over_cap_rejected(self):
+        c = _make_candidate(symbol="AAPL", max_loss=200.0)
+        survivors, rejections = apply_account_filters([c], self._state(bp_usage_pct=0.495), **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(rejections[0].reason, "bp_over_cap")
+        self.assertIn("post-trade BP 50.5% above cap 50.0%", rejections[0].detail)
+
+    def test_concentration_overlap_rejected(self):
+        c = _make_candidate(symbol="AAPL", max_loss=1500.0)
+        state = self._state(exposures={"AAPL": 4000.0})
+        filters = dict(self.DEFAULT_FILTERS, max_pct_nlv_per_trade=0.10)
+        survivors, rejections = apply_account_filters([c], state, **filters)
+        self.assertEqual(survivors, [])
+        self.assertEqual(rejections[0].reason, "concentration_overlap")
+        self.assertIn("AAPL exposure $4000 + $1500 = 27.5% NLV above cap 25.0%", rejections[0].detail)
+
+    def test_first_failure_wins_oversized_before_bp(self):
+        c = _make_candidate(symbol="AAPL", max_loss=2000.0)
+        state = self._state(bp_usage_pct=0.495)
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(rejections[0].reason, "oversized_vs_nlv")
+
+    def test_empty_candidates_returns_empty_account_filters(self):
+        survivors, rejections = apply_account_filters([], self._state(), **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(rejections, [])
+
+    def test_threshold_boundary_oversized_just_under_passes(self):
+        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        survivors, _ = apply_account_filters([c], self._state(), **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [c])
+
+    def test_threshold_boundary_concentration_no_existing_exposure_passes(self):
+        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        state = self._state(bp_usage_pct=0.10, exposures={"AAPL": 4000.0})
+        survivors, _ = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [c])
+
+    def test_account_fit_full_when_max_loss_under_two_pct(self):
+        c = _make_candidate(max_loss=200.0)
+        self.assertEqual(_score_account_fit(c, self._state()), 10.0)
+
+    def test_account_fit_zero_when_max_loss_at_or_above_five_pct(self):
+        c5 = _make_candidate(max_loss=1000.0)
+        c10 = _make_candidate(max_loss=2000.0)
+        self.assertEqual(_score_account_fit(c5, self._state()), 0.0)
+        self.assertEqual(_score_account_fit(c10, self._state()), 0.0)
+
+    def test_account_fit_linear_ramp_at_three_pct(self):
+        c = _make_candidate(max_loss=600.0)
+        self.assertAlmostEqual(_score_account_fit(c, self._state()), 6.6667, places=4)
+
+    def test_account_fit_no_state_returns_ten_placeholder(self):
+        c = _make_candidate(max_loss=99999.0)
+        self.assertEqual(_score_account_fit(c, None), 10.0)
+
+    def test_concentration_penalty_zero_no_existing_exposure_small_trade(self):
+        c = _make_candidate(symbol="AAPL", max_loss=400.0)
+        self.assertEqual(_score_concentration_penalty(c, self._state()), 0.0)
+
+    def test_concentration_penalty_ramps_with_exposure(self):
+        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        state = self._state(exposures={"AAPL": 2000.0})
+        self.assertAlmostEqual(_score_concentration_penalty(c, state), 5.0, places=4)
+
+    def test_concentration_penalty_full_at_or_above_twentyfive_pct(self):
+        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        state25 = self._state(exposures={"AAPL": 4000.0})
+        state40 = self._state(exposures={"AAPL": 7000.0})
+        self.assertEqual(_score_concentration_penalty(c, state25), 10.0)
+        self.assertEqual(_score_concentration_penalty(c, state40), 10.0)
+
+    def test_concentration_penalty_no_state_returns_zero_placeholder(self):
+        c = _make_candidate(symbol="AAPL", max_loss=99999.0)
+        self.assertEqual(_score_concentration_penalty(c, None), 0.0)
+
+    def test_score_candidate_threads_account_state_to_components(self):
+        c = _make_candidate(symbol="AAPL", max_loss=600.0, iv_rank=50.0)
+        state = self._state(exposures={"AAPL": 2000.0})
+        scored_with = score_candidate(c, today=date(2026, 4, 26), account_state=state)
+        scored_without = score_candidate(c, today=date(2026, 4, 26))
+        self.assertNotEqual(scored_with.score_breakdown["account_fit"], scored_without.score_breakdown["account_fit"])
+        self.assertGreater(scored_without.score, scored_with.score)
+
+    def test_score_candidate_without_state_matches_tcbt10_baseline(self):
+        c = _make_candidate(iv_rank=60.0)
+        a = score_candidate(c, today=date(2026, 4, 26))
+        b = score_candidate(c, today=date(2026, 4, 26), account_state=None)
+        self.assertEqual(a.score, b.score)
+        self.assertEqual(a.score_breakdown, b.score_breakdown)
+
+    def test_score_candidates_propagates_state_to_each(self):
+        c1 = _make_candidate(symbol="AAPL", max_loss=200.0)
+        c2 = _make_candidate(symbol="MSFT", max_loss=2000.0)
+        state = self._state()
+        scored = score_candidates([c1, c2], today=date(2026, 4, 26), account_state=state)
+        self.assertEqual(scored[0].score_breakdown["account_fit"], 10.0)
+        self.assertEqual(scored[1].score_breakdown["account_fit"], 0.0)
+
+    def test_higher_existing_exposure_lowers_score(self):
+        c = _make_candidate(symbol="AAPL", max_loss=1000.0, iv_rank=50.0)
+        state_low = self._state(exposures={"AAPL": 0.0})
+        state_high = self._state(exposures={"AAPL": 3000.0})
+        s_low = score_candidate(c, today=date(2026, 4, 26), account_state=state_low).score
+        s_high = score_candidate(c, today=date(2026, 4, 26), account_state=state_high).score
+        self.assertGreater(s_low, s_high)
+
+    # Non-positive NLV guards (Codex review on PR #15)
+
+    def test_zero_nlv_rejects_all_candidates_with_reason(self):
+        candidates = [
+            _make_candidate(symbol="AAPL", max_loss=200.0),
+            _make_candidate(symbol="MSFT", max_loss=300.0),
+        ]
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0, existing_exposures={})
+        survivors, rejections = apply_account_filters(candidates, state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(len(rejections), 2)
+        self.assertEqual({r.reason for r in rejections}, {"non_positive_nlv"})
+        self.assertEqual([r.symbol for r in rejections], ["AAPL", "MSFT"])
+
+    def test_negative_nlv_rejects_all_candidates_with_reason(self):
+        c = _make_candidate(symbol="AAPL", max_loss=200.0)
+        state = AccountState(nlv=-500.0, bp_usage_pct=0.0, existing_exposures={})
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].reason, "non_positive_nlv")
+        self.assertIn("non-positive", rejections[0].detail)
+
+    def test_zero_nlv_account_fit_returns_placeholder(self):
+        c = _make_candidate(max_loss=99999.0)
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0)
+        self.assertEqual(_score_account_fit(c, state), 10.0)
+
+    def test_zero_nlv_concentration_penalty_returns_zero(self):
+        c = _make_candidate(symbol="AAPL", max_loss=99999.0)
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0, existing_exposures={"AAPL": 50000.0})
+        self.assertEqual(_score_concentration_penalty(c, state), 0.0)
+
+    def test_zero_nlv_score_candidate_does_not_raise(self):
+        c = _make_candidate(iv_rank=50.0, max_loss=1000.0)
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0)
+        scored = score_candidate(c, today=date(2026, 4, 26), account_state=state)
+        self.assertEqual(scored.score_breakdown["account_fit"], 10.0)
+        self.assertEqual(scored.score_breakdown["concentration_penalty"], 0.0)
 
 
 if __name__ == "__main__":
