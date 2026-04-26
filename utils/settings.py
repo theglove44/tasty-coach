@@ -28,6 +28,8 @@ INTEGER_KEYS: frozenset[str] = frozenset({
     "bt_max_dte",
     "bt_min_open_interest",
     "bt_max_per_symbol",
+    "bt_research_concurrency",
+    "bt_research_timeout_seconds",
 })
 
 DEFAULTS: dict[str, Any] = {
@@ -46,6 +48,8 @@ DEFAULTS: dict[str, Any] = {
     "bt_bp_cap_for_new": 0.50,
     "bt_concentration_overlap_block_pct": 0.25,
     "bt_min_ivr": 30.0,
+    "bt_research_concurrency": 5,
+    "bt_research_timeout_seconds": 45,
     "alert_toggles": {
         "position_size": True,
         "bp": True,

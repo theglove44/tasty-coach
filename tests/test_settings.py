@@ -357,6 +357,28 @@ class TestBestTradesSettingsRoundTrip(unittest.TestCase):
             s = Settings(config_path=Path(tmpdir) / "config.json")
             self.assertEqual(s.get("bt_min_ivr"), 30.0)
 
+    def test_bt_research_concurrency_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_research_concurrency", 8)
+            self.assertEqual(s.get("bt_research_concurrency"), 8)
+
+    def test_bt_research_concurrency_default_five(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            self.assertEqual(s.get("bt_research_concurrency"), 5)
+
+    def test_bt_research_timeout_seconds_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            s.set("bt_research_timeout_seconds", 60)
+            self.assertEqual(s.get("bt_research_timeout_seconds"), 60)
+
+    def test_bt_research_timeout_seconds_default_forty_five(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = Settings(config_path=Path(tmpdir) / "config.json")
+            self.assertEqual(s.get("bt_research_timeout_seconds"), 45)
+
 
 if __name__ == "__main__":
     unittest.main()
