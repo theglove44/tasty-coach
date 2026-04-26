@@ -97,6 +97,40 @@ class TestBuildContext(unittest.TestCase):
         self.assertIsNotNone(ctx)
         self.assertEqual(ctx.current_price, Decimal("12.34"))
 
+    def test_zero_valued_metrics_preserved_not_coerced_to_none(self):
+        """Legitimate zero values (e.g. IVR=0 for a quiet stock) must survive as 0.0, not None."""
+        metric = _make_metric(
+            "AAPL",
+            ivr=Decimal("0"),
+            ivp=Decimal("0"),
+            iv=Decimal("0"),
+            beta=Decimal("0"),
+            liq=Decimal("0"),
+        )
+        ctx = _build_context("AAPL", metric, _make_price("AAPL"))
+        self.assertEqual(ctx.iv_rank, 0.0)
+        self.assertEqual(ctx.iv_percentile, 0.0)
+        self.assertEqual(ctx.current_iv, 0.0)
+        self.assertEqual(ctx.beta, 0.0)
+        self.assertEqual(ctx.liquidity_rank, 0.0)
+
+    def test_none_valued_metrics_remain_none(self):
+        """When the SDK returns None for a metric field, the context field stays None."""
+        metric = _make_metric(
+            "AAPL",
+            ivr=None,
+            ivp=None,
+            iv=None,
+            beta=None,
+            liq=None,
+        )
+        ctx = _build_context("AAPL", metric, _make_price("AAPL"))
+        self.assertIsNone(ctx.iv_rank)
+        self.assertIsNone(ctx.iv_percentile)
+        self.assertIsNone(ctx.current_iv)
+        self.assertIsNone(ctx.beta)
+        self.assertIsNone(ctx.liquidity_rank)
+
 
 class TestScanWatchlists(unittest.IsolatedAsyncioTestCase):
     """Tests for scan_watchlists orchestration."""

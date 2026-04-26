@@ -120,23 +120,23 @@ def _build_context(
 
     if metric is not None:
         try:
-            ctx.iv_rank = (float(metric.implied_volatility_index_rank) * 100) if metric.implied_volatility_index_rank else None
+            ctx.iv_rank = (float(metric.implied_volatility_index_rank) * 100) if metric.implied_volatility_index_rank is not None else None
         except (ValueError, TypeError):
             ctx.iv_rank = None
         try:
-            ctx.iv_percentile = (float(metric.implied_volatility_percentile) * 100) if metric.implied_volatility_percentile else None
+            ctx.iv_percentile = (float(metric.implied_volatility_percentile) * 100) if metric.implied_volatility_percentile is not None else None
         except (ValueError, TypeError):
             ctx.iv_percentile = None
         try:
-            ctx.current_iv = float(metric.implied_volatility_index) if metric.implied_volatility_index else None
+            ctx.current_iv = float(metric.implied_volatility_index) if metric.implied_volatility_index is not None else None
         except (ValueError, TypeError):
             ctx.current_iv = None
         try:
-            ctx.beta = float(metric.beta) if metric.beta else None
+            ctx.beta = float(metric.beta) if metric.beta is not None else None
         except (ValueError, TypeError):
             ctx.beta = None
         try:
-            ctx.liquidity_rank = float(metric.liquidity_rank) if metric.liquidity_rank else None
+            ctx.liquidity_rank = float(metric.liquidity_rank) if metric.liquidity_rank is not None else None
         except (ValueError, TypeError):
             ctx.liquidity_rank = None
         if metric.earnings and metric.earnings.expected_report_date:
