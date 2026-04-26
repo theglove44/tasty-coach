@@ -425,6 +425,15 @@ def apply_account_filters(
     bp_usage = account_state.bp_usage_pct
     exposures = account_state.existing_exposures
 
+    if nlv <= 0:
+        for c in candidates:
+            rejections.append(Rejection(
+                symbol=c.symbol,
+                reason="non_positive_nlv",
+                detail=f"NLV ${nlv:.0f} is non-positive; cannot evaluate account fit",
+            ))
+        return survivors, rejections
+
     for c in candidates:
         size_pct = c.max_loss / nlv
 
@@ -552,8 +561,8 @@ def _score_account_fit(
     candidate: Candidate,
     account_state: Optional[AccountState] = None,
 ) -> float:
-    """Score 0..10 for trade-size fit; placeholder 10.0 when account_state is None."""
-    if account_state is None:
+    """Score 0..10 for trade-size fit; placeholder 10.0 when account_state is None or NLV non-positive."""
+    if account_state is None or account_state.nlv <= 0:
         return _WEIGHT_ACCOUNT_FIT
     pct = candidate.max_loss / account_state.nlv
     return max(0.0, min(10.0, 10.0 * (0.05 - pct) / 0.03))
@@ -563,8 +572,8 @@ def _score_concentration_penalty(
     candidate: Candidate,
     account_state: Optional[AccountState] = None,
 ) -> float:
-    """Subtractive penalty 0..10 for concentration; placeholder 0.0 when account_state is None."""
-    if account_state is None:
+    """Subtractive penalty 0..10 for concentration; placeholder 0.0 when account_state is None or NLV non-positive."""
+    if account_state is None or account_state.nlv <= 0:
         return 0.0
     existing = account_state.existing_exposures.get(candidate.symbol, 0.0)
     post_trade_pct = (existing + candidate.max_loss) / account_state.nlv

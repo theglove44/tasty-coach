@@ -978,6 +978,46 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         s_high = score_candidate(c, today=date(2026, 4, 26), account_state=state_high).score
         self.assertGreater(s_low, s_high)
 
+    # Non-positive NLV guards (Codex review on PR #15)
+
+    def test_zero_nlv_rejects_all_candidates_with_reason(self):
+        candidates = [
+            _make_candidate(symbol="AAPL", max_loss=200.0),
+            _make_candidate(symbol="MSFT", max_loss=300.0),
+        ]
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0, existing_exposures={})
+        survivors, rejections = apply_account_filters(candidates, state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(len(rejections), 2)
+        self.assertEqual({r.reason for r in rejections}, {"non_positive_nlv"})
+        self.assertEqual([r.symbol for r in rejections], ["AAPL", "MSFT"])
+
+    def test_negative_nlv_rejects_all_candidates_with_reason(self):
+        c = _make_candidate(symbol="AAPL", max_loss=200.0)
+        state = AccountState(nlv=-500.0, bp_usage_pct=0.0, existing_exposures={})
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].reason, "non_positive_nlv")
+        self.assertIn("non-positive", rejections[0].detail)
+
+    def test_zero_nlv_account_fit_returns_placeholder(self):
+        c = _make_candidate(max_loss=99999.0)
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0)
+        self.assertEqual(_score_account_fit(c, state), 10.0)
+
+    def test_zero_nlv_concentration_penalty_returns_zero(self):
+        c = _make_candidate(symbol="AAPL", max_loss=99999.0)
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0, existing_exposures={"AAPL": 50000.0})
+        self.assertEqual(_score_concentration_penalty(c, state), 0.0)
+
+    def test_zero_nlv_score_candidate_does_not_raise(self):
+        c = _make_candidate(iv_rank=50.0, max_loss=1000.0)
+        state = AccountState(nlv=0.0, bp_usage_pct=0.0)
+        scored = score_candidate(c, today=date(2026, 4, 26), account_state=state)
+        self.assertEqual(scored.score_breakdown["account_fit"], 10.0)
+        self.assertEqual(scored.score_breakdown["concentration_penalty"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
