@@ -224,6 +224,7 @@ class LauncherUI:
             LauncherAction("d", "Account dashboard", "Unified portfolio, performance, and risk view", self._run_account_dashboard),
             LauncherAction("t", "Event timeline", "Recent fills, assignments, exercises, and rolls", self._run_event_timeline),
             LauncherAction("9", "Dashboard", "Open the market quality dashboard", self._run_dashboard),
+            LauncherAction("b", "Best trades today", "Rank best trade ideas across watchlists", self._run_best_trades),
             LauncherAction("a", "Switch account", "Pick a different linked account", self._switch_account),
             LauncherAction("s", "Settings", "Edit thresholds and alert toggles", self._run_settings_editor),
             LauncherAction("q", "Quit", "Exit the launcher", self._quit, exit_on_run=True, shortcut="F10"),
@@ -655,6 +656,12 @@ class LauncherUI:
 
         open_html = await self._prompt_confirm("Open in browser?", default=False)
         await run_dashboard(self.session, html=open_html)
+
+    async def _run_best_trades(self) -> None:
+        """Launcher handler: run watchlist-wide best-trades stub with defaults (no prompts)."""
+        from agents.trade_ranker import run_best_trades, _print_best_trades_text
+        result = await run_best_trades(self.session)
+        _print_best_trades_text(result, top=3)
 
     def _get_watchlist_catalog(self) -> list[dict[str, str]]:
         """Return a combined private/public watchlist catalog."""
