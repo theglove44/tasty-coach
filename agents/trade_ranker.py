@@ -16,6 +16,7 @@ from tastytrade import Session
 from tastytrade.metrics import get_market_metrics
 from tastytrade.market_data import get_market_data_by_type
 
+from agents.options_researcher import OptionsResearcherAgent
 from agents.scanner import ScannerAgent
 
 
@@ -41,6 +42,96 @@ class SymbolContext:
     beta: Optional[float] = None
     liquidity_rank: Optional[float] = None
     next_earnings_date: Optional[date] = None
+
+
+@dataclass
+class Candidate:
+    """A single trade idea ready for gates/scoring/ranking."""
+    symbol: str
+    structure: str
+    expiration: date
+    dte: int
+    width: float
+    credit: float
+    max_loss: float
+    credit_pct_of_width: float
+    short_delta: float
+    pop_estimate: float
+    breakevens: list[float]
+    net_greeks: dict[str, float]
+    legs: list[dict[str, Any]]
+    researcher_score: float
+    researcher_score_breakdown: dict[str, Any]
+    context: SymbolContext
+
+
+@dataclass
+class Rejection:
+    """A symbol or candidate that was filtered out before scoring."""
+    symbol: str
+    reason: str
+    detail: Optional[str] = None
+
+
+def _idea_to_candidate(symbol: str, idea: dict[str, Any], context: SymbolContext) -> Candidate:
+    """Translate a researcher trade_ideas dict into a Candidate, preserving the source SymbolContext."""
+    expiration = date.fromisoformat(idea["expiration"])
+    return Candidate(
+        symbol=symbol,
+        structure=idea["strategy"],
+        expiration=expiration,
+        dte=idea["dte"],
+        width=idea["width"],
+        credit=idea["credit"],
+        max_loss=idea["max_loss"],
+        credit_pct_of_width=idea["credit_pct_of_width"],
+        short_delta=idea["short_delta"],
+        pop_estimate=idea["pop_estimate"],
+        breakevens=list(idea.get("breakevens") or []),
+        net_greeks=dict(idea.get("net_greeks") or {}),
+        legs=list(idea.get("legs") or []),
+        researcher_score=idea["score"],
+        researcher_score_breakdown=dict(idea.get("score_breakdown") or {}),
+        context=context,
+    )
+
+
+async def generate_candidates(
+    session: Session,
+    contexts: Sequence[SymbolContext],
+    *,
+    researcher: Optional[OptionsResearcherAgent] = None,
+    max_per_symbol: int = 3,
+) -> tuple[list[Candidate], list[Rejection]]:
+    """For each SymbolContext, call OptionsResearcherAgent.research; return candidates + rejections."""
+    candidates: list[Candidate] = []
+    rejections: list[Rejection] = []
+
+    if not contexts:
+        return (candidates, rejections)
+
+    if researcher is None:
+        researcher = OptionsResearcherAgent(session)
+
+    for ctx in contexts:
+        try:
+            report = await researcher.research(ctx.symbol)
+        except Exception as e:
+            rejections.append(Rejection(symbol=ctx.symbol, reason="researcher_exception", detail=str(e)))
+            continue
+
+        status = report.get("status")
+        if status != "OK":
+            warnings = report.get("warnings") or []
+            detail = warnings[0] if warnings else None
+            rejections.append(Rejection(symbol=ctx.symbol, reason=str(status), detail=detail))
+            continue
+
+        ideas = report.get("trade_ideas") or []
+        for idea in ideas[:max_per_symbol]:
+            candidates.append(_idea_to_candidate(ctx.symbol, idea, ctx))
+
+    return (candidates, rejections)
 
 
 async def scan_watchlists(

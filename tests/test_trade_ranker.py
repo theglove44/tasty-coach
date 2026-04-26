@@ -5,7 +5,14 @@ from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agents.trade_ranker import SymbolContext, _build_context, scan_watchlists
+from agents.trade_ranker import (
+    Candidate,
+    Rejection,
+    SymbolContext,
+    _build_context,
+    generate_candidates,
+    scan_watchlists,
+)
 
 
 def _make_metric(
@@ -254,6 +261,181 @@ class TestScanWatchlists(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(warnings), 1)
         self.assertTrue(warnings[0].startswith("batch fetch failed: "))
         self.assertIn("boom", warnings[0])
+
+
+def _make_idea(strategy="BULL_PUT_SPREAD", *, expiration="2026-06-19", dte=45,
+               width=5.0, credit=1.5, max_loss=350.0, credit_pct=0.30,
+               short_delta=0.30, pop=0.65, score=72.0,
+               score_breakdown=None, breakevens=None, net_greeks=None, legs=None):
+    return {
+        "rank": 1,
+        "strategy": strategy,
+        "expiration": expiration,
+        "dte": dte,
+        "width": width,
+        "credit": credit,
+        "max_loss": max_loss,
+        "credit_pct_of_width": credit_pct,
+        "short_delta": short_delta,
+        "pop_estimate": pop,
+        "breakevens": breakevens if breakevens is not None else [148.5],
+        "net_greeks": net_greeks if net_greeks is not None else {"delta": 0.05, "gamma": 0.001, "theta": 0.20, "vega": -0.15},
+        "legs": legs if legs is not None else [{"action": "SELL"}, {"action": "BUY"}],
+        "score": score,
+        "score_breakdown": score_breakdown if score_breakdown is not None else {"raw": {}},
+    }
+
+
+def _make_ok_report(symbol="AAPL", *, ideas=None, warnings=None):
+    return {
+        "status": "OK",
+        "symbol": symbol,
+        "warnings": warnings if warnings is not None else [],
+        "trade_ideas": ideas if ideas is not None else [_make_idea()],
+    }
+
+
+def _make_failure_report(symbol="AAPL", status="NO_CHAIN", warnings=None):
+    return {
+        "status": status,
+        "symbol": symbol,
+        "warnings": warnings if warnings is not None else [],
+        "trade_ideas": [],
+    }
+
+
+class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
+    """Tests for generate_candidates orchestration."""
+
+    async def test_single_context_produces_candidate(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=_make_ok_report())
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(len(rejections), 0)
+        c = candidates[0]
+        self.assertEqual(c.symbol, "AAPL")
+        self.assertEqual(c.structure, "BULL_PUT_SPREAD")
+        self.assertEqual(c.dte, 45)
+        self.assertEqual(c.credit, 1.5)
+        self.assertEqual(c.max_loss, 350.0)
+        self.assertEqual(c.short_delta, 0.30)
+        self.assertEqual(c.legs, [{"action": "SELL"}, {"action": "BUY"}])
+        self.assertEqual(c.researcher_score, 72.0)
+        self.assertEqual(c.researcher_score_breakdown, {"raw": {}})
+
+    async def test_expiration_parsed_to_date_object(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=_make_ok_report(ideas=[_make_idea(expiration="2026-06-19")]))
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        self.assertEqual(candidates[0].expiration, date(2026, 6, 19))
+        self.assertIsInstance(candidates[0].expiration, date)
+
+    async def test_context_carried_through_to_candidate(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=_make_ok_report())
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        self.assertIs(candidates[0].context, ctx)
+
+    async def test_status_not_ok_emits_rejection(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=_make_failure_report(status="NO_VIABLE_IDEAS", warnings=[]))
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        self.assertEqual(candidates, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].reason, "NO_VIABLE_IDEAS")
+        self.assertIsNone(rejections[0].detail)
+        self.assertEqual(rejections[0].symbol, "AAPL")
+
+    async def test_rejection_includes_first_warning(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=_make_failure_report(status="NO_CHAIN", warnings=["chain unavailable", "x"]))
+        ctx = SymbolContext(symbol="AAPL")
+        _, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        self.assertEqual(rejections[0].detail, "chain unavailable")
+        self.assertEqual(rejections[0].reason, "NO_CHAIN")
+
+    async def test_researcher_exception_emits_rejection(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(side_effect=RuntimeError("boom"))
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, rejections = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        self.assertEqual(candidates, [])
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0].reason, "researcher_exception")
+        self.assertIn("boom", rejections[0].detail)
+
+    async def test_max_per_symbol_caps_candidates(self):
+        ideas = [_make_idea(score=float(i)) for i in range(5)]
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=_make_ok_report(ideas=ideas))
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher, max_per_symbol=2)
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(candidates[0].researcher_score, 0.0)
+        self.assertEqual(candidates[1].researcher_score, 1.0)
+
+    async def test_empty_contexts_returns_empty(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock()
+        candidates, rejections = await generate_candidates(MagicMock(), [], researcher=researcher)
+        self.assertEqual(candidates, [])
+        self.assertEqual(rejections, [])
+        researcher.research.assert_not_called()
+
+    @patch("agents.trade_ranker.OptionsResearcherAgent")
+    async def test_default_researcher_constructed_when_not_passed(self, mock_class):
+        instance = MagicMock()
+        instance.research = AsyncMock(return_value=_make_ok_report())
+        mock_class.return_value = instance
+        session = MagicMock()
+        ctx = SymbolContext(symbol="AAPL")
+        await generate_candidates(session, [ctx])
+        mock_class.assert_called_once_with(session)
+
+    async def test_each_strategy_type_handled(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(side_effect=[
+            _make_ok_report(symbol="AAPL", ideas=[_make_idea(strategy="BULL_PUT_SPREAD")]),
+            _make_ok_report(symbol="MSFT", ideas=[_make_idea(strategy="BEAR_CALL_SPREAD")]),
+            _make_ok_report(symbol="SPY", ideas=[_make_idea(strategy="IRON_CONDOR")]),
+        ])
+        contexts = [SymbolContext(symbol=s) for s in ("AAPL", "MSFT", "SPY")]
+        candidates, _ = await generate_candidates(MagicMock(), contexts, researcher=researcher)
+        self.assertEqual([c.structure for c in candidates], ["BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "IRON_CONDOR"])
+
+    async def test_multiple_contexts_preserve_order(self):
+        researcher = MagicMock()
+        researcher.research = AsyncMock(side_effect=[
+            _make_ok_report(symbol="AAPL"),
+            _make_ok_report(symbol="MSFT"),
+        ])
+        contexts = [SymbolContext(symbol="AAPL"), SymbolContext(symbol="MSFT")]
+        candidates, _ = await generate_candidates(MagicMock(), contexts, researcher=researcher)
+        self.assertEqual([c.symbol for c in candidates], ["AAPL", "MSFT"])
+
+    async def test_optional_fields_default_to_empty(self):
+        idea = {
+            "rank": 1, "strategy": "BULL_PUT_SPREAD", "expiration": "2026-06-19",
+            "dte": 45, "width": 5.0, "credit": 1.5, "max_loss": 350.0,
+            "credit_pct_of_width": 0.30, "short_delta": 0.30, "pop_estimate": 0.65,
+            "breakevens": None, "net_greeks": None, "legs": None,
+            "score": 72.0, "score_breakdown": None,
+        }
+        report = {"status": "OK", "symbol": "AAPL", "warnings": [], "trade_ideas": [idea]}
+        researcher = MagicMock()
+        researcher.research = AsyncMock(return_value=report)
+        ctx = SymbolContext(symbol="AAPL")
+        candidates, _ = await generate_candidates(MagicMock(), [ctx], researcher=researcher)
+        c = candidates[0]
+        self.assertEqual(c.breakevens, [])
+        self.assertEqual(c.net_greeks, {})
+        self.assertEqual(c.legs, [])
+        self.assertEqual(c.researcher_score_breakdown, {})
 
 
 if __name__ == "__main__":
