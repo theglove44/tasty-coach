@@ -382,7 +382,22 @@ def _candidate_to_dict(c: Candidate) -> dict[str, Any]:
         "score": float(c.score),
         "score_breakdown": dict(c.score_breakdown) if c.score_breakdown else {},
         "summary_reason": c.summary_reason or "",
+        "legs": [dict(leg) for leg in (c.legs or [])],
     }
+
+
+def _format_legs_from_dicts(legs: list[dict[str, Any]]) -> str:
+    """Compact per-leg summary for text output: 'SELL PUT 105 Δ-0.30 / BUY PUT 100 Δ-0.18'."""
+    parts: list[str] = []
+    for leg in legs or []:
+        action = leg.get("action") or leg.get("side") or "?"
+        opt_type = leg.get("option_type") or leg.get("type") or "?"
+        strike = leg.get("strike")
+        delta = leg.get("delta")
+        strike_s = f"{float(strike):g}" if strike is not None else "?"
+        delta_s = f"Δ{float(delta):+.2f}" if delta is not None else "Δ?"
+        parts.append(f"{action} {opt_type} {strike_s} {delta_s}")
+    return " / ".join(parts)
 
 
 async def _build_account_state(session: Session, account_number: str) -> AccountState:
@@ -533,6 +548,9 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
             summary = item.get("summary_reason", "")
             breakdown = item.get("score_breakdown") or {}
             print(f"[{idx}] {symbol} {structure} {expiration} ({dte} DTE)")
+            legs_line = _format_legs_from_dicts(item.get("legs") or [])
+            if legs_line:
+                print(f"    Legs: {legs_line}")
             print(f"    Credit ${credit:.2f} / Max risk ${max_loss:.0f}")
             print(f"    Score: {score:.1f}/100 — {summary}")
             if breakdown:
