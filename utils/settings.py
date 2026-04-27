@@ -59,6 +59,30 @@ DEFAULTS: dict[str, Any] = {
         "assignment": True,
     },
 }
+SETTINGS_DESCRIPTIONS: dict[str, str] = {
+    # Phase A risk-management thresholds
+    "position_pct_nlv_warn": "Warn when any single position exceeds this fraction of NLV (0.05 = 5%).",
+    "bp_usage_warn": "Warn when buying-power usage exceeds this fraction (0.50 = 50%).",
+    "bp_usage_block": "Block new trades when buying-power usage exceeds this fraction.",
+    "concentration_pct_nlv_warn": "Warn when concentration in one underlying exceeds this fraction of NLV.",
+    "theta_target": "Target portfolio theta (positive number). Set 'none' to disable the theta alert.",
+    # Best-Trades-Today: quality gates
+    "bt_earnings_blackout_days": "Reject candidates with earnings within this many days (forward only).",
+    "bt_min_dte": "Reject candidates with DTE below this number (default 21).",
+    "bt_max_dte": "Reject candidates with DTE above this number (default 60).",
+    "bt_min_open_interest": "Reject if any leg's open interest is below this floor.",
+    "bt_max_spread_pct": "Reject if worst leg's bid-ask spread / mid exceeds this fraction (0.10 = 10%).",
+    # Best-Trades-Today: account fit (only active when --account is provided)
+    "bt_max_pct_nlv_per_trade": "Reject candidates whose max-loss exceeds this fraction of NLV (0.05 = 5%).",
+    "bt_bp_cap_for_new": "Reject if post-trade BP usage would exceed this fraction (0.50 = 50%).",
+    "bt_concentration_overlap_block_pct": "Reject if combined exposure to one underlying exceeds this fraction of NLV.",
+    # Best-Trades-Today: scan + research
+    "bt_min_ivr": "Pre-filter watchlist symbols by IVR; symbols below this percentage are skipped before research (default 30).",
+    "bt_max_per_symbol": "Cap candidate count per symbol from the researcher (default 3).",
+    "bt_research_concurrency": "Number of symbols researched in parallel (default 5; raise for speed at the cost of API load).",
+    "bt_research_timeout_seconds": "Per-symbol hard timeout in seconds; symbols exceeding this become research_timeout rejections (default 45).",
+}
+
 CONFIG_DIR = Path.home() / ".tasty-coach"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 logger = logging.getLogger(__name__)

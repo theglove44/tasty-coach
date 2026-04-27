@@ -562,25 +562,39 @@ class LauncherUI:
         await run_account_dashboard(self.session, account_number=account_number)
 
     async def _run_settings_editor(self) -> None:
-        """Launcher handler: interactive editor for Phase A settings."""
+        """Launcher handler: interactive editor for all numeric + integer settings."""
         from rich.prompt import Confirm, Prompt
         from rich.table import Table
         from utils.settings import (
+            INTEGER_KEYS,
             NUMERIC_KEYS,
             OPTIONAL_NUMERIC_KEYS,
+            SETTINGS_DESCRIPTIONS,
             settings as settings_obj,
         )
 
         console = self.console
-        numeric_keys = sorted(NUMERIC_KEYS) + sorted(OPTIONAL_NUMERIC_KEYS)
+        editable_keys = (
+            sorted(NUMERIC_KEYS)
+            + sorted(INTEGER_KEYS)
+            + sorted(OPTIONAL_NUMERIC_KEYS)
+        )
         toggle_keys = sorted((settings_obj.get("alert_toggles") or {}).keys())
 
         pending: dict[str, Any] = {}
 
         try:
-            console.print("[bold]Settings — numeric thresholds[/bold]")
-            console.print("[dim]  Enter a number to change. For optional keys, type 'none' to clear.[/dim]")
-            for key in numeric_keys:
+            console.print("[bold]Settings — thresholds[/bold]")
+            console.print(
+                "[dim]  Press Enter to keep the current value. For optional keys, type 'none' to clear.[/dim]"
+            )
+            console.print(
+                "[dim]  See docs/settings.md for full descriptions of every key.[/dim]\n"
+            )
+            for key in editable_keys:
+                description = SETTINGS_DESCRIPTIONS.get(key, "")
+                if description:
+                    console.print(f"[cyan]{key}[/cyan] — [dim]{description}[/dim]")
                 current = settings_obj.get(key)
                 shown = "" if current is None else str(current)
                 answer = Prompt.ask(
