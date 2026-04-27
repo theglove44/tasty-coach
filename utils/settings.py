@@ -49,7 +49,7 @@ DEFAULTS: dict[str, Any] = {
     "bt_concentration_overlap_block_pct": 0.25,
     "bt_min_ivr": 30.0,
     "bt_research_concurrency": 5,
-    "bt_research_timeout_seconds": 45,
+    "bt_research_timeout_seconds": 90,
     "alert_toggles": {
         "position_size": True,
         "bp": True,

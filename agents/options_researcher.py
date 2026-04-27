@@ -2,23 +2,78 @@
 
 import logging
 import asyncio
+from types import SimpleNamespace
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, date, timezone
 from dataclasses import dataclass, asdict, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import math
 
 from tastytrade import Session
 from tastytrade.instruments import get_option_chain, OptionType
 from tastytrade.metrics import get_market_metrics
-from tastytrade.market_data import get_market_data_by_type
+from tastytrade.market_data import MarketData
 from tastytrade.streamer import DXLinkStreamer
 from tastytrade.dxfeed import Greeks
+
+
+def _is_standard_monthly(exp_date: date, chain_dates: set) -> bool:
+    """Standard equity-option monthlies expire the 3rd Friday of the month.
+
+    When the 3rd Friday is a market holiday (Juneteenth on 2026-06-19,
+    Good Friday in some years), the chain instead lists the 3rd-week Thursday.
+    Treat that Thursday as the monthly when no Friday in the same week is in
+    the chain.
+    """
+    if not (15 <= exp_date.day <= 21):
+        return False
+    weekday = exp_date.weekday()
+    if weekday == 4:  # Friday
+        return True
+    if weekday == 3:  # Thursday: monthly only when no Friday-in-3rd-week is listed
+        try:
+            friday = exp_date.replace(day=exp_date.day + 1)
+        except ValueError:
+            return False
+        return friday not in chain_dates
+    return False
+
+
+def _to_decimal(v: Any) -> Optional[Decimal]:
+    if v is None:
+        return None
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _parse_market_data_item(item: Dict[str, Any]) -> Any:
+    """Lenient parse: try strict MarketData, else SimpleNamespace with the fields we use.
+
+    The TastyTrade /market-data/by-type endpoint occasionally omits summary-date /
+    prev-close-date for newly listed weekly options, which makes the strict SDK model
+    raise. We don't use those fields, so fall back rather than dropping the row.
+    """
+    try:
+        return MarketData(**item)
+    except Exception:
+        return SimpleNamespace(
+            symbol=item.get("symbol"),
+            bid=_to_decimal(item.get("bid")),
+            ask=_to_decimal(item.get("ask")),
+            mark=_to_decimal(item.get("mark")),
+            mid=_to_decimal(item.get("mid")),
+            volume=_to_decimal(item.get("volume")),
+            open_interest=_to_decimal(item.get("open-interest")),
+        )
 
 # Module-level constants
 DEFAULT_DTE_TARGET = 45
 DTE_FALLBACK_MIN = 25
 DTE_FALLBACK_MAX = 75
+MONTHLY_DTE_MIN = 25
+MONTHLY_DTE_MAX = 75
 TARGET_SHORT_DELTA = 0.30
 SHORT_DELTA_MIN = 0.15
 SHORT_DELTA_MAX = 0.45
@@ -276,47 +331,37 @@ class OptionsResearcherAgent:
         requested: Optional[date],
     ) -> Tuple[Optional[date], str]:
         """
-        Resolve target expiration from chain.
+        Resolve target expiration from chain. Defaults to standard monthlies only
+        (3rd Friday, or 3rd-week Thursday when Friday is a market holiday like
+        Juneteenth/Good Friday). Weeklies and quarterlies are ignored — they
+        carry far less open interest at the ~30-delta strikes we screen.
 
         Returns:
             (expiration_date, resolution_mode)
-            resolution_mode: 'EXPLICIT', 'MONTHLY_45DTE', 'NEAREST_IN_WINDOW', or 'NONE'
+            resolution_mode: 'EXPLICIT', 'MONTHLY', or 'NONE'
         """
-        # If explicit expiration requested
+        # If explicit expiration requested, honor it as-is (operator override)
         if requested is not None:
             if requested in chain:
                 return (requested, 'EXPLICIT')
             else:
                 return (None, 'NONE')
 
-        # Try to find nearest monthly to 45 DTE
         today = date.today()
+        chain_dates = set(chain.keys())
         candidates = []
 
-        for exp_date in chain.keys():
+        for exp_date in chain_dates:
             dte = (exp_date - today).days
-            # Check if it's a monthly (3rd Friday)
-            is_friday = exp_date.weekday() == 4
-            is_third_week = 15 <= exp_date.day <= 21
-            is_monthly = is_friday and is_third_week
-
-            if is_monthly and 30 <= dte <= 60:
-                candidates.append((abs(dte - DEFAULT_DTE_TARGET), dte, exp_date))
+            if not (MONTHLY_DTE_MIN <= dte <= MONTHLY_DTE_MAX):
+                continue
+            if not _is_standard_monthly(exp_date, chain_dates):
+                continue
+            candidates.append((abs(dte - DEFAULT_DTE_TARGET), dte, exp_date))
 
         if candidates:
             candidates.sort(key=lambda x: x[0])
-            return (candidates[0][2], 'MONTHLY_45DTE')
-
-        # Fallback: nearest within window
-        fallback_candidates = []
-        for exp_date in chain.keys():
-            dte = (exp_date - today).days
-            if DTE_FALLBACK_MIN <= dte <= DTE_FALLBACK_MAX:
-                fallback_candidates.append((abs(dte - DEFAULT_DTE_TARGET), dte, exp_date))
-
-        if fallback_candidates:
-            fallback_candidates.sort(key=lambda x: x[0])
-            return (fallback_candidates[0][2], 'NEAREST_IN_WINDOW')
+            return (candidates[0][2], 'MONTHLY')
 
         return (None, 'NONE')
 
@@ -443,9 +488,12 @@ class OptionsResearcherAgent:
             if not batch:
                 return
             try:
-                market_data = get_market_data_by_type(self.session, options=batch)
-                for md in market_data:
-                    md_map[md.symbol] = md
+                params = {"equity-option": batch}
+                data = self.session._get("/market-data/by-type", params=params)
+                for item in data["items"]:
+                    md = _parse_market_data_item(item)
+                    if md.symbol:
+                        md_map[md.symbol] = md
             except Exception as e:
                 if len(batch) == 1 or depth >= 4:
                     self.logger.warning(

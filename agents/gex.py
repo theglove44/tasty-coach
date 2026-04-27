@@ -260,7 +260,9 @@ class GEXAgent:
             for i in range(0, len(all_symbols), 50):
                 chunk = all_symbols[i:i + 50]
                 try:
-                    market_data = get_market_data_by_type(self.session, options=chunk)
+                    from agents.options_researcher import _parse_market_data_item
+                    data = self.session._get("/market-data/by-type", params={"equity-option": chunk})
+                    market_data = [_parse_market_data_item(i) for i in data["items"]]
                     for md in market_data:
                         entry = {}
                         if md.open_interest is not None:

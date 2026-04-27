@@ -542,13 +542,24 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
     rejected = result.get("rejected") or []
     if rejected:
         counts: dict[str, int] = {}
+        by_reason: dict[str, list[dict[str, Any]]] = {}
         for r in rejected:
             reason = r.get("reason", "unknown")
             counts[reason] = counts.get(reason, 0) + 1
+            by_reason.setdefault(reason, []).append(r)
         print()
         print("Rejection summary:")
         for reason, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"  {reason}: {n}")
+        if not top_items:
+            print()
+            print("Rejection details (no trades passed):")
+            for reason in sorted(by_reason, key=lambda k: (-counts[k], k)):
+                print(f"  [{reason}]")
+                for r in by_reason[reason]:
+                    sym = r.get("symbol", "?")
+                    detail = r.get("detail") or ""
+                    print(f"    {sym}: {detail}" if detail else f"    {sym}")
 
     warnings = result.get("warnings") or []
     if warnings:
@@ -611,6 +622,23 @@ def _check_broken_pricing(candidate: Candidate) -> Optional[Rejection]:
     return None
 
 
+def _format_legs(candidate: Candidate) -> str:
+    """Compact per-leg summary with expiration prefix."""
+    parts: list[str] = []
+    exp_prefix = f"{candidate.expiration.isoformat()} ({candidate.dte}d) "
+    for leg in candidate.legs:
+        action = leg.get("action") or leg.get("side") or "?"
+        opt_type = leg.get("option_type") or leg.get("type") or "?"
+        strike = leg.get("strike")
+        delta = leg.get("delta")
+        oi = leg.get("open_interest")
+        strike_s = f"{float(strike):g}" if strike is not None else "?"
+        delta_s = f"Δ{float(delta):+.2f}" if delta is not None else "Δ?"
+        oi_s = f"OI {int(oi)}" if oi is not None else "OI ?"
+        parts.append(f"{action} {opt_type} {strike_s} {delta_s} {oi_s}")
+    return exp_prefix + " / ".join(parts)
+
+
 def _check_open_interest(candidate: Candidate, min_open_interest: int) -> Optional[Rejection]:
     """Reject if the minimum non-None open interest across legs falls below the floor."""
     ois = [leg.get("open_interest") for leg in candidate.legs if leg.get("open_interest") is not None]
@@ -621,7 +649,7 @@ def _check_open_interest(candidate: Candidate, min_open_interest: int) -> Option
         return Rejection(
             symbol=candidate.symbol,
             reason="low_open_interest",
-            detail=f"min OI {min_oi} below floor {min_open_interest}",
+            detail=f"min OI {min_oi} below floor {min_open_interest} | {_format_legs(candidate)}",
         )
     return None
 
@@ -643,7 +671,7 @@ def _check_spread(candidate: Candidate, max_spread_pct: float) -> Optional[Rejec
         return Rejection(
             symbol=candidate.symbol,
             reason="wide_spread",
-            detail=f"max spread {worst:.3f} above cap {max_spread_pct:.3f}",
+            detail=f"max spread {worst:.3f} above cap {max_spread_pct:.3f} | {_format_legs(candidate)}",
         )
     return None
 
