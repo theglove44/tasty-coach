@@ -50,5 +50,37 @@ class TestLauncherUI(unittest.IsolatedAsyncioTestCase):
         reviewer.review_positions.assert_awaited_once_with(underlying_filter="NVDA")
 
 
+class TestSettingsEditorCoverage(unittest.IsolatedAsyncioTestCase):
+    """Settings editor must expose every editable key from the settings module."""
+
+    async def test_editor_iterates_numeric_integer_and_optional_keys(self):
+        """The settings editor's editable_keys must be a superset of NUMERIC + INTEGER + OPTIONAL_NUMERIC."""
+        from utils.settings import INTEGER_KEYS, NUMERIC_KEYS, OPTIONAL_NUMERIC_KEYS, settings as settings_obj
+        ui = LauncherUI(MagicMock(), MagicMock(), account_number="A123")
+        ui.console = MagicMock()
+        prompted_keys: list[str] = []
+
+        def fake_ask(prompt, default=None, console=None):
+            prompted_keys.append(prompt.strip())
+            return default if default is not None else ""
+
+        with patch("rich.prompt.Prompt.ask", side_effect=fake_ask), \
+             patch("rich.prompt.Confirm.ask", return_value=False):
+            await ui._run_settings_editor()
+
+        expected_keys = NUMERIC_KEYS | INTEGER_KEYS | OPTIONAL_NUMERIC_KEYS
+        for key in expected_keys:
+            self.assertTrue(
+                any(key in p for p in prompted_keys),
+                f"settings editor did not prompt for {key}",
+            )
+
+    async def test_descriptions_cover_every_editable_key(self):
+        from utils.settings import INTEGER_KEYS, NUMERIC_KEYS, OPTIONAL_NUMERIC_KEYS, SETTINGS_DESCRIPTIONS
+        editable = NUMERIC_KEYS | INTEGER_KEYS | OPTIONAL_NUMERIC_KEYS
+        missing = editable - set(SETTINGS_DESCRIPTIONS.keys())
+        self.assertEqual(missing, set(), f"missing descriptions: {missing}")
+
+
 if __name__ == "__main__":
     unittest.main()
