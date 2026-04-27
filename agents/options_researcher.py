@@ -351,7 +351,9 @@ class OptionsResearcherAgent:
         chain_dates = set(chain.keys())
         candidates = []
 
-        for exp_date in chain_dates:
+        # Iterate sorted chain keys so candidate order is deterministic across
+        # runs/processes (set iteration is hash-randomized).
+        for exp_date in sorted(chain_dates):
             dte = (exp_date - today).days
             if not (MONTHLY_DTE_MIN <= dte <= MONTHLY_DTE_MAX):
                 continue
@@ -360,7 +362,10 @@ class OptionsResearcherAgent:
             candidates.append((abs(dte - DEFAULT_DTE_TARGET), dte, exp_date))
 
         if candidates:
-            candidates.sort(key=lambda x: x[0])
+            # Sort by (distance-from-target, dte, exp_date) — on a tie of equal
+            # distance (e.g. 31 and 59 DTE both 14 from 45), prefer the earlier
+            # expiration; exp_date is the final tiebreaker for absolute determinism.
+            candidates.sort(key=lambda x: (x[0], x[1], x[2]))
             return (candidates[0][2], 'MONTHLY')
 
         return (None, 'NONE')
