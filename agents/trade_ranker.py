@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
@@ -17,6 +18,7 @@ from agents.manager import RiskManager
 from agents.options_researcher import OptionsResearcherAgent
 from agents.portfolio import PortfolioAgent
 from agents.scanner import ScannerAgent
+from utils.sector_map import get_sector
 from utils.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,16 @@ DEFAULT_WATCHLISTS: tuple[str, ...] = (
 )
 
 _BATCH_SIZE: int = 50
+
+# Equity options carry $100 of underlying per contract.
+# Researcher stores credit/max_loss in spread points; multiply by this to get
+# actual dollar risk/credit per contract.
+CONTRACT_MULTIPLIER: float = 100.0
+
+
+def _dollar_max_loss(c: "Candidate") -> float:
+    """Return actual dollar max loss per contract (Candidate.max_loss is in spread points)."""
+    return float(c.max_loss) * CONTRACT_MULTIPLIER
 
 
 @dataclass
@@ -87,6 +99,7 @@ class AccountState:
     nlv: float
     bp_usage_pct: float
     existing_exposures: dict[str, float] = field(default_factory=dict)
+    occupied_sectors: frozenset[str] = field(default_factory=frozenset)
 
 
 def _idea_to_candidate(symbol: str, idea: dict[str, Any], context: SymbolContext) -> Candidate:
@@ -316,6 +329,7 @@ def _load_thresholds() -> dict[str, Any]:
         "min_ivr": settings.get("bt_min_ivr"),
         "research_concurrency": settings.get("bt_research_concurrency"),
         "research_timeout_seconds": settings.get("bt_research_timeout_seconds"),
+        "per_trade_risk_pct": settings.get("bt_per_trade_risk_pct"),
     }
 
 
@@ -368,9 +382,18 @@ def _rejection_to_dict(r: Rejection) -> dict[str, Any]:
     }
 
 
-def _candidate_to_dict(c: Candidate) -> dict[str, Any]:
-    """Serialize a Candidate to a JSON-safe dict for the top-trades output."""
-    return {
+def _candidate_to_dict(
+    c: Candidate,
+    account_state: Optional[AccountState] = None,
+    per_trade_risk_pct: Optional[float] = None,
+) -> dict[str, Any]:
+    """Serialize a Candidate to a JSON-safe dict for the top-trades output.
+
+    When ``account_state`` and ``per_trade_risk_pct`` are provided, also emits
+    ``recommended_contracts``, ``pct_nlv_at_risk``, and ``sector`` so the AI
+    coach (and the text printer) can show personalized sizing.
+    """
+    payload: dict[str, Any] = {
         "symbol": c.symbol,
         "structure": c.structure,
         "expiration": c.expiration.isoformat() if hasattr(c.expiration, "isoformat") else str(c.expiration),
@@ -383,7 +406,23 @@ def _candidate_to_dict(c: Candidate) -> dict[str, Any]:
         "score_breakdown": dict(c.score_breakdown) if c.score_breakdown else {},
         "summary_reason": c.summary_reason or "",
         "legs": [dict(leg) for leg in (c.legs or [])],
+        "sector": get_sector(c.symbol),
     }
+
+    if account_state and account_state.nlv > 0 and c.max_loss > 0:
+        dollar_risk = _dollar_max_loss(c)
+        payload["max_loss_dollars"] = dollar_risk
+        payload["pct_nlv_at_risk_one_contract"] = dollar_risk / account_state.nlv
+        if per_trade_risk_pct and per_trade_risk_pct > 0:
+            budget = account_state.nlv * per_trade_risk_pct
+            recommended = int(budget // dollar_risk)
+            # If a single contract already exceeds the budget, recommend 0 (skip).
+            payload["recommended_contracts"] = recommended
+            payload["pct_nlv_at_risk"] = (
+                recommended * dollar_risk / account_state.nlv
+            )
+
+    return payload
 
 
 def _format_legs_from_dicts(legs: list[dict[str, Any]]) -> str:
@@ -400,18 +439,80 @@ def _format_legs_from_dicts(legs: list[dict[str, Any]]) -> str:
     return " / ".join(parts)
 
 
+def _position_dollar_exposure(pos: Any) -> float:
+    """Conservative per-position dollar exposure for concentration accounting.
+
+    - Short option: strike * 100 * |quantity| (cash-secured worst-case for puts; OK proxy for short calls).
+    - Long option: 0 (premium is sunk cost; no further compounding risk on new picks).
+    - Equity: |quantity| * average_open_price (cost basis).
+    """
+    inst = getattr(pos, "instrument_type", None)
+    inst_str = getattr(inst, "value", str(inst)) if inst is not None else ""
+    qty = getattr(pos, "quantity", 0) or 0
+    try:
+        qty_f = float(qty)
+    except (TypeError, ValueError):
+        qty_f = 0.0
+    qty_f = abs(qty_f)
+
+    if inst_str == "Equity":
+        avg = getattr(pos, "average_open_price", 0) or 0
+        try:
+            return qty_f * float(avg)
+        except (TypeError, ValueError):
+            return 0.0
+
+    if inst_str != "Equity Option":
+        return 0.0
+
+    direction = getattr(getattr(pos, "quantity_direction", None), "value", None) or getattr(pos, "quantity_direction", None)
+    if direction != "Short":
+        return 0.0
+
+    sym = getattr(pos, "symbol", "") or ""
+    m = re.match(r"^[A-Z/]+\s+\d{6}[CP](\d{8})$", sym)
+    if not m:
+        return 0.0
+    strike = float(m.group(1)) / 1000.0
+    return strike * 100.0 * qty_f
+
+
 async def _build_account_state(session: Session, account_number: str) -> AccountState:
-    """Build AccountState from RiskManager + PortfolioAgent (existing_exposures={} for v1)."""
+    """Build AccountState with real per-underlying exposures and occupied sectors."""
     risk_manager = RiskManager(session, account_number)
     report = await risk_manager.calculate_portfolio_risk()
     nlv = float(report["nlv"])
     bp_usage_pct = float(report["bp_usage_pct"]) / 100.0
+
     portfolio_agent = await PortfolioAgent(session, account_number).init()
-    _positions = await portfolio_agent.get_positions()
+    positions = await portfolio_agent.get_positions()
+
+    # Only positions with non-zero dollar exposure (short options + equity) populate
+    # exposures and occupied_sectors. A long-only position contributes 0 dollars and
+    # would silently both (a) pollute the concentration check by creating an
+    # exposures key that bypasses the sector gate's "rolling/adding" exception, and
+    # (b) over-broadly mark the sector as occupied — see review notes on
+    # TCBT-account-sizing.
+    exposures: dict[str, float] = {}
+    sectors: set[str] = set()
+    for pos in positions:
+        underlying = getattr(pos, "underlying_symbol", None) or getattr(pos, "symbol", None)
+        if not underlying:
+            continue
+        dollars = _position_dollar_exposure(pos)
+        if dollars <= 0:
+            continue
+        underlying = str(underlying).upper()
+        exposures[underlying] = exposures.get(underlying, 0.0) + dollars
+        sec = get_sector(underlying)
+        if sec:
+            sectors.add(sec)
+
     return AccountState(
         nlv=nlv,
         bp_usage_pct=bp_usage_pct,
-        existing_exposures={},
+        existing_exposures=exposures,
+        occupied_sectors=frozenset(sectors),
     )
 
 
@@ -514,7 +615,10 @@ async def run_best_trades(
 
     scored = score_candidates(passing, today=today, account_state=account_state)
     selected = _select_top_per_symbol(scored, top)
-    result["top"] = [_candidate_to_dict(c) for c in selected]
+    result["top"] = [
+        _candidate_to_dict(c, account_state=account_state, per_trade_risk_pct=thresholds.get("per_trade_risk_pct"))
+        for c in selected
+    ]
     logger.info("done: %d top trades selected from %d scored candidates", len(result["top"]), len(scored))
     return result
 
@@ -543,7 +647,8 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
             expiration = item.get("expiration", "?")
             dte = item.get("dte", 0)
             credit = item.get("credit", 0.0)
-            max_loss = item.get("max_loss", 0.0)
+            max_loss_pts = item.get("max_loss", 0.0)
+            max_loss_dollars = item.get("max_loss_dollars", max_loss_pts * 100.0)
             score = item.get("score", 0.0)
             summary = item.get("summary_reason", "")
             breakdown = item.get("score_breakdown") or {}
@@ -551,7 +656,20 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
             legs_line = _format_legs_from_dicts(item.get("legs") or [])
             if legs_line:
                 print(f"    Legs: {legs_line}")
-            print(f"    Credit ${credit:.2f} / Max risk ${max_loss:.0f}")
+            print(f"    Credit ${credit * 100:.0f} / Max risk ${max_loss_dollars:.0f} per contract")
+            recommended = item.get("recommended_contracts")
+            pct_at_risk = item.get("pct_nlv_at_risk")
+            if recommended is not None:
+                if recommended == 0:
+                    one_pct = item.get("pct_nlv_at_risk_one_contract")
+                    skip_str = f" (1 contract = {one_pct * 100:.1f}% NLV)" if one_pct is not None else ""
+                    print(f"    Recommended size: SKIP — exceeds per-trade risk budget{skip_str}")
+                else:
+                    pct_str = f" ({pct_at_risk * 100:.1f}% NLV at risk)" if pct_at_risk is not None else ""
+                    print(f"    Recommended size: {recommended} contract{'s' if recommended != 1 else ''}{pct_str}")
+            sector_tag = item.get("sector")
+            if sector_tag:
+                print(f"    Sector: {sector_tag}")
             print(f"    Score: {score:.1f}/100 — {summary}")
             if breakdown:
                 parts = [f"{k} {float(v):.1f}" for k, v in breakdown.items()]
@@ -750,14 +868,15 @@ def apply_account_filters(
         return survivors, rejections
 
     for c in candidates:
-        size_pct = c.max_loss / nlv
+        dollar_risk = _dollar_max_loss(c)
+        size_pct = dollar_risk / nlv
 
         if size_pct > max_pct_nlv_per_trade:
             rejections.append(Rejection(
                 symbol=c.symbol,
                 reason="oversized_vs_nlv",
                 detail=(
-                    f"max_loss ${c.max_loss:.0f} = "
+                    f"max_loss ${dollar_risk:.0f} = "
                     f"{size_pct * 100:.1f}% NLV above cap "
                     f"{max_pct_nlv_per_trade * 100:.1f}%"
                 ),
@@ -777,15 +896,35 @@ def apply_account_filters(
             continue
 
         existing = exposures.get(c.symbol, 0.0)
-        post_exposure_pct = (existing + c.max_loss) / nlv
+        post_exposure_pct = (existing + dollar_risk) / nlv
         if post_exposure_pct > concentration_block_pct:
             rejections.append(Rejection(
                 symbol=c.symbol,
                 reason="concentration_overlap",
                 detail=(
-                    f"{c.symbol} exposure ${existing:.0f} + ${c.max_loss:.0f} = "
+                    f"{c.symbol} exposure ${existing:.0f} + ${dollar_risk:.0f} = "
                     f"{post_exposure_pct * 100:.1f}% NLV above cap "
                     f"{concentration_block_pct * 100:.1f}%"
+                ),
+            ))
+            continue
+
+        # Sector gate: block candidates whose sector is already represented by an
+        # OPEN position, but allow rolling/adding into an underlying we already
+        # hold (the `c.symbol in exposures` exception). Only checks against the
+        # existing portfolio, not against other survivors in this batch — multiple
+        # new picks in the same sector can survive a single run.
+        candidate_sector = get_sector(c.symbol)
+        if (
+            candidate_sector
+            and candidate_sector in account_state.occupied_sectors
+            and c.symbol not in exposures
+        ):
+            rejections.append(Rejection(
+                symbol=c.symbol,
+                reason="sector_overlap",
+                detail=(
+                    f"sector '{candidate_sector}' already represented by an open position"
                 ),
             ))
             continue
@@ -879,7 +1018,7 @@ def _score_account_fit(
     """Score 0..10 for trade-size fit; placeholder 10.0 when account_state is None or NLV non-positive."""
     if account_state is None or account_state.nlv <= 0:
         return _WEIGHT_ACCOUNT_FIT
-    pct = candidate.max_loss / account_state.nlv
+    pct = _dollar_max_loss(candidate) / account_state.nlv
     return max(0.0, min(10.0, 10.0 * (0.05 - pct) / 0.03))
 
 
@@ -891,7 +1030,7 @@ def _score_concentration_penalty(
     if account_state is None or account_state.nlv <= 0:
         return 0.0
     existing = account_state.existing_exposures.get(candidate.symbol, 0.0)
-    post_trade_pct = (existing + candidate.max_loss) / account_state.nlv
+    post_trade_pct = (existing + _dollar_max_loss(candidate)) / account_state.nlv
     return max(0.0, min(10.0, 10.0 * (post_trade_pct - 0.05) / 0.20))
 
 

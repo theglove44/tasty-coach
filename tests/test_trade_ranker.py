@@ -665,7 +665,7 @@ class TestQualityGates(unittest.TestCase):
         passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
         self.assertEqual(passing, [])
         self.assertEqual(rejections[0].reason, "low_open_interest")
-        self.assertEqual(rejections[0].detail, "min OI 150 below floor 200")
+        self.assertIn("min OI 150 below floor 200", rejections[0].detail)
 
     def test_all_oi_none_does_not_reject(self):
         legs = [
@@ -684,7 +684,7 @@ class TestQualityGates(unittest.TestCase):
         passing, rejections = apply_quality_gates([c], **self.DEFAULT_KW)
         self.assertEqual(passing, [])
         self.assertEqual(rejections[0].reason, "wide_spread")
-        self.assertEqual(rejections[0].detail, "max spread 0.194 above cap 0.100")
+        self.assertIn("max spread 0.194 above cap 0.100", rejections[0].detail)
 
     def test_missing_pricing_skips_spread_gate(self):
         legs = [
@@ -921,27 +921,30 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         return AccountState(nlv=nlv, bp_usage_pct=bp_usage_pct, existing_exposures=exposures or {})
 
     def test_passing_candidate_survives_all_account_filters(self):
-        c = _make_candidate(symbol="AAPL", max_loss=200.0)
+        # max_loss in spread points; ×100 = $200 per contract = 1% of $20k NLV
+        c = _make_candidate(symbol="AAPL", max_loss=2.0)
         survivors, rejections = apply_account_filters([c], self._state(), **self.DEFAULT_FILTERS)
         self.assertEqual(survivors, [c])
         self.assertEqual(rejections, [])
 
     def test_oversized_vs_nlv_rejected(self):
-        c = _make_candidate(symbol="AAPL", max_loss=2000.0)
+        # 20 points × $100 = $2000 = 10% NLV, above 5% cap
+        c = _make_candidate(symbol="AAPL", max_loss=20.0)
         survivors, rejections = apply_account_filters([c], self._state(), **self.DEFAULT_FILTERS)
         self.assertEqual(survivors, [])
         self.assertEqual(rejections[0].reason, "oversized_vs_nlv")
         self.assertIn("10.0% NLV above cap 5.0%", rejections[0].detail)
 
     def test_bp_over_cap_rejected(self):
-        c = _make_candidate(symbol="AAPL", max_loss=200.0)
+        c = _make_candidate(symbol="AAPL", max_loss=2.0)
         survivors, rejections = apply_account_filters([c], self._state(bp_usage_pct=0.495), **self.DEFAULT_FILTERS)
         self.assertEqual(survivors, [])
         self.assertEqual(rejections[0].reason, "bp_over_cap")
         self.assertIn("post-trade BP 50.5% above cap 50.0%", rejections[0].detail)
 
     def test_concentration_overlap_rejected(self):
-        c = _make_candidate(symbol="AAPL", max_loss=1500.0)
+        # 15 points × $100 = $1500; existing $4000; total $5500 = 27.5% NLV
+        c = _make_candidate(symbol="AAPL", max_loss=15.0)
         state = self._state(exposures={"AAPL": 4000.0})
         filters = dict(self.DEFAULT_FILTERS, max_pct_nlv_per_trade=0.10)
         survivors, rejections = apply_account_filters([c], state, **filters)
@@ -950,7 +953,7 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         self.assertIn("AAPL exposure $4000 + $1500 = 27.5% NLV above cap 25.0%", rejections[0].detail)
 
     def test_first_failure_wins_oversized_before_bp(self):
-        c = _make_candidate(symbol="AAPL", max_loss=2000.0)
+        c = _make_candidate(symbol="AAPL", max_loss=20.0)
         state = self._state(bp_usage_pct=0.495)
         survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
         self.assertEqual(rejections[0].reason, "oversized_vs_nlv")
@@ -961,56 +964,59 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         self.assertEqual(rejections, [])
 
     def test_threshold_boundary_oversized_just_under_passes(self):
-        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        # 10 points × $100 = $1000 = 5% NLV exactly; strict > so passes
+        c = _make_candidate(symbol="AAPL", max_loss=10.0)
         survivors, _ = apply_account_filters([c], self._state(), **self.DEFAULT_FILTERS)
         self.assertEqual(survivors, [c])
 
     def test_threshold_boundary_concentration_no_existing_exposure_passes(self):
-        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        c = _make_candidate(symbol="AAPL", max_loss=10.0)
         state = self._state(bp_usage_pct=0.10, exposures={"AAPL": 4000.0})
         survivors, _ = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
         self.assertEqual(survivors, [c])
 
     def test_account_fit_full_when_max_loss_under_two_pct(self):
-        c = _make_candidate(max_loss=200.0)
+        c = _make_candidate(max_loss=2.0)
         self.assertEqual(_score_account_fit(c, self._state()), 10.0)
 
     def test_account_fit_zero_when_max_loss_at_or_above_five_pct(self):
-        c5 = _make_candidate(max_loss=1000.0)
-        c10 = _make_candidate(max_loss=2000.0)
+        c5 = _make_candidate(max_loss=10.0)
+        c10 = _make_candidate(max_loss=20.0)
         self.assertEqual(_score_account_fit(c5, self._state()), 0.0)
         self.assertEqual(_score_account_fit(c10, self._state()), 0.0)
 
     def test_account_fit_linear_ramp_at_three_pct(self):
-        c = _make_candidate(max_loss=600.0)
+        # 6 points × $100 = $600 = 3% NLV
+        c = _make_candidate(max_loss=6.0)
         self.assertAlmostEqual(_score_account_fit(c, self._state()), 6.6667, places=4)
 
     def test_account_fit_no_state_returns_ten_placeholder(self):
-        c = _make_candidate(max_loss=99999.0)
+        c = _make_candidate(max_loss=999.99)
         self.assertEqual(_score_account_fit(c, None), 10.0)
 
     def test_concentration_penalty_zero_no_existing_exposure_small_trade(self):
-        c = _make_candidate(symbol="AAPL", max_loss=400.0)
+        c = _make_candidate(symbol="AAPL", max_loss=4.0)
         self.assertEqual(_score_concentration_penalty(c, self._state()), 0.0)
 
     def test_concentration_penalty_ramps_with_exposure(self):
-        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        # 10 points × $100 = $1000 + existing $2000 = $3000 = 15% NLV → penalty 5
+        c = _make_candidate(symbol="AAPL", max_loss=10.0)
         state = self._state(exposures={"AAPL": 2000.0})
         self.assertAlmostEqual(_score_concentration_penalty(c, state), 5.0, places=4)
 
     def test_concentration_penalty_full_at_or_above_twentyfive_pct(self):
-        c = _make_candidate(symbol="AAPL", max_loss=1000.0)
+        c = _make_candidate(symbol="AAPL", max_loss=10.0)
         state25 = self._state(exposures={"AAPL": 4000.0})
         state40 = self._state(exposures={"AAPL": 7000.0})
         self.assertEqual(_score_concentration_penalty(c, state25), 10.0)
         self.assertEqual(_score_concentration_penalty(c, state40), 10.0)
 
     def test_concentration_penalty_no_state_returns_zero_placeholder(self):
-        c = _make_candidate(symbol="AAPL", max_loss=99999.0)
+        c = _make_candidate(symbol="AAPL", max_loss=999.99)
         self.assertEqual(_score_concentration_penalty(c, None), 0.0)
 
     def test_score_candidate_threads_account_state_to_components(self):
-        c = _make_candidate(symbol="AAPL", max_loss=600.0, iv_rank=50.0)
+        c = _make_candidate(symbol="AAPL", max_loss=6.0, iv_rank=50.0)
         state = self._state(exposures={"AAPL": 2000.0})
         scored_with = score_candidate(c, today=date(2026, 4, 26), account_state=state)
         scored_without = score_candidate(c, today=date(2026, 4, 26))
@@ -1025,15 +1031,15 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         self.assertEqual(a.score_breakdown, b.score_breakdown)
 
     def test_score_candidates_propagates_state_to_each(self):
-        c1 = _make_candidate(symbol="AAPL", max_loss=200.0)
-        c2 = _make_candidate(symbol="MSFT", max_loss=2000.0)
+        c1 = _make_candidate(symbol="AAPL", max_loss=2.0)
+        c2 = _make_candidate(symbol="MSFT", max_loss=20.0)
         state = self._state()
         scored = score_candidates([c1, c2], today=date(2026, 4, 26), account_state=state)
         self.assertEqual(scored[0].score_breakdown["account_fit"], 10.0)
         self.assertEqual(scored[1].score_breakdown["account_fit"], 0.0)
 
     def test_higher_existing_exposure_lowers_score(self):
-        c = _make_candidate(symbol="AAPL", max_loss=1000.0, iv_rank=50.0)
+        c = _make_candidate(symbol="AAPL", max_loss=10.0, iv_rank=50.0)
         state_low = self._state(exposures={"AAPL": 0.0})
         state_high = self._state(exposures={"AAPL": 3000.0})
         s_low = score_candidate(c, today=date(2026, 4, 26), account_state=state_low).score
@@ -1079,6 +1085,94 @@ class TestAccountFiltersAndScoring(unittest.TestCase):
         scored = score_candidate(c, today=date(2026, 4, 26), account_state=state)
         self.assertEqual(scored.score_breakdown["account_fit"], 10.0)
         self.assertEqual(scored.score_breakdown["concentration_penalty"], 0.0)
+
+    # Sector overlap gate (TCBT-account-sizing)
+
+    def _state_with_sectors(self, occupied, exposures=None, nlv=20000.0):
+        return AccountState(
+            nlv=nlv,
+            bp_usage_pct=0.10,
+            existing_exposures=exposures or {},
+            occupied_sectors=frozenset(occupied),
+        )
+
+    def test_sector_overlap_rejected_when_sector_occupied_and_no_existing(self):
+        # AAPL is tech_hardware; sector occupied by another holding (e.g., SMCI)
+        c = _make_candidate(symbol="AAPL", max_loss=2.0)
+        state = self._state_with_sectors({"tech_hardware"})
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [])
+        self.assertEqual(rejections[0].reason, "sector_overlap")
+        self.assertIn("tech_hardware", rejections[0].detail)
+
+    def test_sector_overlap_bypassed_when_symbol_already_in_exposures(self):
+        # Rolling/adding into AAPL is allowed even though tech_hardware is occupied
+        c = _make_candidate(symbol="AAPL", max_loss=2.0)
+        state = self._state_with_sectors({"tech_hardware"}, exposures={"AAPL": 1000.0})
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [c])
+        self.assertEqual(rejections, [])
+
+    def test_sector_overlap_bypassed_when_sector_unknown(self):
+        # ZZZZ has no sector mapping → fail-open
+        c = _make_candidate(symbol="ZZZZ", max_loss=2.0)
+        state = self._state_with_sectors({"tech_hardware", "financial_bank"})
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [c])
+        self.assertEqual(rejections, [])
+
+    def test_sector_overlap_bypassed_when_sector_not_occupied(self):
+        c = _make_candidate(symbol="AAPL", max_loss=2.0)
+        state = self._state_with_sectors({"financial_bank"})
+        survivors, rejections = apply_account_filters([c], state, **self.DEFAULT_FILTERS)
+        self.assertEqual(survivors, [c])
+
+
+class TestSizingRecommendation(unittest.TestCase):
+    """Tests for _candidate_to_dict sizing recommendation fields (TCBT-account-sizing)."""
+
+    @staticmethod
+    def _candidate(symbol="AAPL", max_loss=2.0):
+        return _make_candidate(symbol=symbol, max_loss=max_loss)
+
+    def _state(self, nlv=20000.0):
+        return AccountState(nlv=nlv, bp_usage_pct=0.10, existing_exposures={})
+
+    def test_sizing_omitted_without_account_state(self):
+        from agents.trade_ranker import _candidate_to_dict
+        d = _candidate_to_dict(self._candidate())
+        self.assertNotIn("recommended_contracts", d)
+        self.assertNotIn("max_loss_dollars", d)
+        self.assertIn("sector", d)  # sector is unconditional
+
+    def test_sizing_omitted_when_nlv_non_positive(self):
+        from agents.trade_ranker import _candidate_to_dict
+        bad_state = AccountState(nlv=0.0, bp_usage_pct=0.0)
+        d = _candidate_to_dict(self._candidate(), account_state=bad_state, per_trade_risk_pct=0.02)
+        self.assertNotIn("recommended_contracts", d)
+        self.assertNotIn("max_loss_dollars", d)
+
+    def test_sizing_omitted_when_per_trade_risk_pct_none(self):
+        from agents.trade_ranker import _candidate_to_dict
+        d = _candidate_to_dict(self._candidate(), account_state=self._state(), per_trade_risk_pct=None)
+        # max_loss_dollars + pct_nlv_at_risk_one_contract still emitted; recommended_contracts not
+        self.assertIn("max_loss_dollars", d)
+        self.assertNotIn("recommended_contracts", d)
+
+    def test_recommended_contracts_within_budget(self):
+        from agents.trade_ranker import _candidate_to_dict
+        # 2-point spread = $200/contract; 2% of $20k NLV = $400 budget; rec = 2
+        d = _candidate_to_dict(self._candidate(max_loss=2.0), account_state=self._state(), per_trade_risk_pct=0.02)
+        self.assertEqual(d["recommended_contracts"], 2)
+        self.assertAlmostEqual(d["pct_nlv_at_risk"], 0.02, places=4)
+        self.assertEqual(d["max_loss_dollars"], 200.0)
+
+    def test_recommended_contracts_skip_when_one_exceeds_budget(self):
+        from agents.trade_ranker import _candidate_to_dict
+        # 5-point spread = $500/contract; 2% of $20k = $400 budget → 0 contracts
+        d = _candidate_to_dict(self._candidate(max_loss=5.0), account_state=self._state(), per_trade_risk_pct=0.02)
+        self.assertEqual(d["recommended_contracts"], 0)
+        self.assertAlmostEqual(d["pct_nlv_at_risk_one_contract"], 0.025, places=4)
 
 
 def _mk_top_candidate(symbol: str, score: float, structure: str = "BULL_PUT_SPREAD") -> Candidate:
@@ -1201,6 +1295,112 @@ class TestFilterByIvr(unittest.TestCase):
         self.assertEqual([c.symbol for c in passing], ["A"])
 
 
+class TestPositionDollarExposure(unittest.TestCase):
+    """Tests for _position_dollar_exposure conservative dollar accounting."""
+
+    @staticmethod
+    def _pos(symbol, instrument_type, quantity, direction=None, avg_open=None):
+        p = MagicMock()
+        p.symbol = symbol
+        p.instrument_type = MagicMock()
+        p.instrument_type.value = instrument_type
+        p.quantity = quantity
+        if direction is not None:
+            p.quantity_direction = MagicMock()
+            p.quantity_direction.value = direction
+        else:
+            p.quantity_direction = None
+        if avg_open is not None:
+            p.average_open_price = avg_open
+        return p
+
+    def test_short_put_uses_strike_times_100(self):
+        from agents.trade_ranker import _position_dollar_exposure
+        # AAPL Jun 19 2026 150 PUT, qty -2
+        pos = self._pos("AAPL  260619P00150000", "Equity Option", 2, direction="Short")
+        self.assertEqual(_position_dollar_exposure(pos), 150.0 * 100 * 2)
+
+    def test_long_option_returns_zero(self):
+        from agents.trade_ranker import _position_dollar_exposure
+        pos = self._pos("AAPL  260619C00150000", "Equity Option", 1, direction="Long")
+        self.assertEqual(_position_dollar_exposure(pos), 0.0)
+
+    def test_equity_uses_qty_times_avg(self):
+        from agents.trade_ranker import _position_dollar_exposure
+        pos = self._pos("AAPL", "Equity", 100, avg_open=180.50)
+        self.assertEqual(_position_dollar_exposure(pos), 100 * 180.50)
+
+    def test_unknown_instrument_returns_zero(self):
+        from agents.trade_ranker import _position_dollar_exposure
+        pos = self._pos("/ESM6", "Future", 1)
+        self.assertEqual(_position_dollar_exposure(pos), 0.0)
+
+    def test_malformed_occ_returns_zero(self):
+        from agents.trade_ranker import _position_dollar_exposure
+        pos = self._pos("not-an-occ-symbol", "Equity Option", 1, direction="Short")
+        self.assertEqual(_position_dollar_exposure(pos), 0.0)
+
+
+class TestBuildAccountStateFiltering(unittest.IsolatedAsyncioTestCase):
+    """_build_account_state should drop zero-exposure positions from exposures and sectors."""
+
+    async def test_long_only_position_does_not_occupy_sector_or_pollute_exposures(self):
+        from agents.trade_ranker import _build_account_state
+
+        # Mock RiskManager and PortfolioAgent
+        long_pos = MagicMock()
+        long_pos.symbol = "NVDA  260619C00500000"
+        long_pos.underlying_symbol = "NVDA"
+        long_pos.instrument_type = MagicMock()
+        long_pos.instrument_type.value = "Equity Option"
+        long_pos.quantity = 1
+        long_pos.quantity_direction = MagicMock()
+        long_pos.quantity_direction.value = "Long"
+
+        with patch("agents.trade_ranker.RiskManager") as mock_rm, \
+             patch("agents.trade_ranker.PortfolioAgent") as mock_pa:
+            rm_inst = mock_rm.return_value
+            rm_inst.calculate_portfolio_risk = AsyncMock(return_value={"nlv": 20000.0, "bp_usage_pct": 10.0})
+
+            pa_inst = MagicMock()
+            pa_inst.get_positions = AsyncMock(return_value=[long_pos])
+            init_inst = AsyncMock(return_value=pa_inst)
+            mock_pa.return_value.init = init_inst
+
+            state = await _build_account_state(MagicMock(), "ACCT")
+
+        # Long-only NVDA must not pollute exposures or occupy semis sector
+        self.assertNotIn("NVDA", state.existing_exposures)
+        self.assertEqual(state.occupied_sectors, frozenset())
+
+    async def test_short_position_populates_exposures_and_sector(self):
+        from agents.trade_ranker import _build_account_state
+
+        short_pos = MagicMock()
+        short_pos.symbol = "NVDA  260619P00400000"
+        short_pos.underlying_symbol = "NVDA"
+        short_pos.instrument_type = MagicMock()
+        short_pos.instrument_type.value = "Equity Option"
+        short_pos.quantity = 1
+        short_pos.quantity_direction = MagicMock()
+        short_pos.quantity_direction.value = "Short"
+
+        with patch("agents.trade_ranker.RiskManager") as mock_rm, \
+             patch("agents.trade_ranker.PortfolioAgent") as mock_pa:
+            rm_inst = mock_rm.return_value
+            rm_inst.calculate_portfolio_risk = AsyncMock(return_value={"nlv": 20000.0, "bp_usage_pct": 10.0})
+
+            pa_inst = MagicMock()
+            pa_inst.get_positions = AsyncMock(return_value=[short_pos])
+            init_inst = AsyncMock(return_value=pa_inst)
+            mock_pa.return_value.init = init_inst
+
+            state = await _build_account_state(MagicMock(), "ACCT")
+
+        self.assertEqual(state.existing_exposures.get("NVDA"), 400.0 * 100)
+        self.assertIn("tech_semiconductors", state.occupied_sectors)
+
+
 class TestLoadThresholds(unittest.TestCase):
     """Tests for _load_thresholds helper."""
 
@@ -1224,6 +1424,7 @@ class TestLoadThresholds(unittest.TestCase):
                 "min_ivr",
                 "research_concurrency",
                 "research_timeout_seconds",
+                "per_trade_risk_pct",
             },
         )
         expected_calls = [
@@ -1239,6 +1440,7 @@ class TestLoadThresholds(unittest.TestCase):
             "bt_min_ivr",
             "bt_research_concurrency",
             "bt_research_timeout_seconds",
+            "bt_per_trade_risk_pct",
         ]
         actual_calls = [call.args[0] for call in mock_settings.get.call_args_list]
         self.assertEqual(set(actual_calls), set(expected_calls))
