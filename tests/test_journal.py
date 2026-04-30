@@ -96,6 +96,100 @@ class TestJournalRecordAndRecall(unittest.TestCase):
         self.assertIsNotNone(s["last_ts"])
 
 
+class TestRecordRecommendation(unittest.TestCase):
+    """journal.record_recommendation builds entries from Best-Trades candidate dicts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "journal.jsonl"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _candidate(self):
+        return {
+            "symbol": "AAPL",
+            "structure": "BULL_PUT_SPREAD",
+            "expiration": "2026-06-19",
+            "dte": 49,
+            "credit": 1.50,
+            "max_loss": 3.50,
+            "max_loss_dollars": 350.0,
+            "recommended_contracts": 2,
+            "pct_nlv_at_risk": 0.035,
+            "score": 72.5,
+            "summary_reason": "high IVR, ~30Δ short, 49 DTE",
+            "sector": "tech_hardware",
+            "legs": [{"action": "SELL", "strike": 150}, {"action": "BUY", "strike": 145}],
+        }
+
+    def test_record_recommendation_sets_kind_symbol_strategy(self):
+        entry = journal.record_recommendation(self._candidate(), path=self.path)
+        self.assertEqual(entry["kind"], "recommendation")
+        self.assertEqual(entry["symbol"], "AAPL")
+        self.assertEqual(entry["strategy"], "BULL_PUT_SPREAD")
+        self.assertIn("id", entry)
+        self.assertEqual(len(entry["id"]), 8)
+
+    def test_record_recommendation_uses_summary_reason_as_rationale(self):
+        entry = journal.record_recommendation(self._candidate(), path=self.path)
+        self.assertEqual(entry["rationale"], "high IVR, ~30Δ short, 49 DTE")
+
+    def test_record_recommendation_caps_long_rationale(self):
+        cand = self._candidate()
+        cand["summary_reason"] = "x" * 5000
+        entry = journal.record_recommendation(cand, path=self.path)
+        self.assertLessEqual(len(entry["rationale"]), 4096 + len("…[truncated]"))
+        self.assertTrue(entry["rationale"].endswith("…[truncated]"))
+
+    def test_record_recommendation_preserves_full_candidate_in_details(self):
+        cand = self._candidate()
+        entry = journal.record_recommendation(cand, path=self.path)
+        self.assertEqual(entry["details"]["candidate"]["max_loss_dollars"], 350.0)
+        self.assertEqual(entry["details"]["candidate"]["legs"][0]["strike"], 150)
+
+    def test_record_recommendation_optional_account_snapshot(self):
+        snap = {"nlv": 20000.0, "bp_usage_pct": 30.0, "over_leveraged": False}
+        entry = journal.record_recommendation(self._candidate(), account_snapshot=snap, path=self.path)
+        self.assertEqual(entry["details"]["account"]["nlv"], 20000.0)
+
+    def test_record_recommendation_optional_scan_id_links_batch(self):
+        scan_id = "abcd1234"
+        e1 = journal.record_recommendation(self._candidate(), scan_id=scan_id, path=self.path)
+        cand2 = dict(self._candidate(), symbol="MSFT")
+        e2 = journal.record_recommendation(cand2, scan_id=scan_id, path=self.path)
+        self.assertEqual(e1["details"]["scan_id"], "abcd1234")
+        self.assertEqual(e2["details"]["scan_id"], "abcd1234")
+        self.assertNotEqual(e1["id"], e2["id"])
+
+    def test_record_recommendation_round_trips_through_recall(self):
+        journal.record_recommendation(self._candidate(), path=self.path)
+        out = journal.recall(kind="recommendation", path=self.path)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["details"]["candidate"]["symbol"], "AAPL")
+
+
+class TestJournalEntryId(unittest.TestCase):
+    def test_record_assigns_id_when_missing(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = Path(tmp.name) / "journal.jsonl"
+            entry = journal.record({"kind": "note", "rationale": "x"}, path=p)
+            self.assertIn("id", entry)
+            self.assertEqual(len(entry["id"]), 8)
+        finally:
+            tmp.cleanup()
+
+    def test_record_preserves_caller_supplied_id(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = Path(tmp.name) / "journal.jsonl"
+            entry = journal.record({"kind": "note", "rationale": "x", "id": "deadbeef"}, path=p)
+            self.assertEqual(entry["id"], "deadbeef")
+        finally:
+            tmp.cleanup()
+
+
 class TestJournalConcurrentAppend(unittest.TestCase):
     """Atomic-append safety: many simultaneous record() calls produce valid JSONL."""
 

@@ -80,6 +80,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-delta", type=float, default=None, help="Minimum absolute short delta (default: 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Maximum absolute short delta (default: 0.45)")
     parser.add_argument("--best-trades", action="store_true", help="Rank best trade ideas across watchlists")
+    parser.add_argument("--journal", action="store_true", help="When used with --best-trades: persist each top pick as a journal recommendation entry")
     parser.add_argument("--coach", action="store_true", help="AI coach: one-shot personalized daily briefing (uses Claude Max via CLAUDE_CODE_OAUTH_TOKEN)")
     parser.add_argument("--chat", action="store_true", help="AI coach: interactive chat REPL")
     parser.add_argument("--serve", action="store_true", help="Run the web dashboard (FastAPI + chat sidebar)")
@@ -297,10 +298,29 @@ async def async_main() -> int:
                 account_number=args.account or getattr(client.config, "account_number", None),
             )
 
+            if args.journal:
+                from utils import journal
+                import uuid as _uuid
+                scan_id = _uuid.uuid4().hex[:8]
+                top = result.get("top") or []
+                journaled_ids: list[str] = []
+                for cand in top:
+                    entry = journal.record_recommendation(
+                        cand,
+                        scan_id=scan_id,
+                    )
+                    cand["_journal_id"] = entry["id"]
+                    journaled_ids.append(entry["id"])
+                result["scan_id"] = scan_id
+                result["journaled_ids"] = journaled_ids
+
             if args.format == "json":
                 print(json.dumps(result, indent=2, default=str))
             else:
                 _print_best_trades_text(result, args.top)
+                if args.journal and result.get("journaled_ids"):
+                    print(f"\n[journal] saved {len(result['journaled_ids'])} recommendation(s) "
+                          f"under scan_id={result['scan_id']}: {', '.join(result['journaled_ids'])}")
 
             return 0
 
