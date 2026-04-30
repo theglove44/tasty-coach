@@ -652,7 +652,9 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
             score = item.get("score", 0.0)
             summary = item.get("summary_reason", "")
             breakdown = item.get("score_breakdown") or {}
-            print(f"[{idx}] {symbol} {structure} {expiration} ({dte} DTE)")
+            jid = item.get("_journal_id")
+            jid_tag = f"  [journal #{jid}]" if jid else ""
+            print(f"[{idx}] {symbol} {structure} {expiration} ({dte} DTE){jid_tag}")
             legs_line = _format_legs_from_dicts(item.get("legs") or [])
             if legs_line:
                 print(f"    Legs: {legs_line}")

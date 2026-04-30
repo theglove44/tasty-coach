@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -48,13 +49,20 @@ def _ensure_parent(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _new_entry_id() -> str:
+    """Short, locally-unique entry id used to link follow-up records (e.g. TCBT-7
+    `--mark-outcome` promotes a `recommendation` to `trade_open` via this id)."""
+    return uuid.uuid4().hex[:8]
+
+
 def record(entry: dict[str, Any], *, path: Optional[Path] = None) -> dict[str, Any]:
-    """Append one entry. Adds ``ts`` if missing. Returns the persisted entry."""
+    """Append one entry. Adds ``ts`` and ``id`` if missing. Returns the persisted entry."""
     p = path or _path()
     _ensure_parent(p)
 
     out = dict(entry)
     out.setdefault("ts", datetime.now().isoformat(timespec="seconds"))
+    out.setdefault("id", _new_entry_id())
     kind = out.get("kind")
     if kind not in VALID_KINDS:
         logger.warning("journal: unknown kind %r; coercing to 'note'", kind)
@@ -66,6 +74,49 @@ def record(entry: dict[str, Any], *, path: Optional[Path] = None) -> dict[str, A
     with p.open("a", encoding="utf-8") as f:
         f.write(line)
     return out
+
+
+def record_recommendation(
+    candidate: dict[str, Any],
+    *,
+    account_snapshot: Optional[dict[str, Any]] = None,
+    scan_id: Optional[str] = None,
+    path: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Persist one top-pick from a Best-Trades scan as a ``recommendation`` entry.
+
+    ``candidate`` is the JSON-shape dict produced by
+    ``agents.trade_ranker._candidate_to_dict`` — it already carries symbol,
+    structure, expiration, score, score_breakdown, summary_reason, and (when
+    account-aware) recommended_contracts + max_loss_dollars. We snapshot it
+    verbatim under ``details`` so a later ``trade_open`` outcome can compare
+    against the originally-recommended structure.
+
+    ``account_snapshot`` (optional) is the dict returned by
+    ``server.snapshot.assemble_dashboard_data`` or any subset of NLV/BP at the
+    time of the recommendation — captured so we can reason about position
+    sizing relative to account state when the trade later closes.
+
+    ``scan_id`` is a free-form identifier linking multiple recommendations
+    from the same Best-Trades run.
+    """
+    rationale = candidate.get("summary_reason") or ""
+    if len(rationale) > 4096:
+        rationale = rationale[:4096] + "…[truncated]"
+    entry: dict[str, Any] = {
+        "kind": "recommendation",
+        "symbol": candidate.get("symbol"),
+        "strategy": candidate.get("structure"),
+        "rationale": rationale,
+        "details": {
+            "candidate": candidate,
+        },
+    }
+    if account_snapshot is not None:
+        entry["details"]["account"] = account_snapshot
+    if scan_id is not None:
+        entry["details"]["scan_id"] = scan_id
+    return record(entry, path=path)
 
 
 def _iter_entries(path: Path) -> Iterable[dict[str, Any]]:
