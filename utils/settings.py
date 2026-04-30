@@ -18,6 +18,7 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
     "bt_bp_cap_for_new",
     "bt_concentration_overlap_block_pct",
     "bt_min_ivr",
+    "bt_per_trade_risk_pct",
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
@@ -47,6 +48,7 @@ DEFAULTS: dict[str, Any] = {
     "bt_max_pct_nlv_per_trade": 0.05,
     "bt_bp_cap_for_new": 0.50,
     "bt_concentration_overlap_block_pct": 0.25,
+    "bt_per_trade_risk_pct": 0.02,
     "bt_min_ivr": 30.0,
     "bt_research_concurrency": 5,
     "bt_research_timeout_seconds": 90,
@@ -76,6 +78,7 @@ SETTINGS_DESCRIPTIONS: dict[str, str] = {
     "bt_max_pct_nlv_per_trade": "Reject candidates whose max-loss exceeds this fraction of NLV (0.05 = 5%).",
     "bt_bp_cap_for_new": "Reject if post-trade BP usage would exceed this fraction (0.50 = 50%).",
     "bt_concentration_overlap_block_pct": "Reject if combined exposure to one underlying exceeds this fraction of NLV.",
+    "bt_per_trade_risk_pct": "Per-trade risk budget for sizing recommendations (0.02 = 2% of NLV per spread).",
     # Best-Trades-Today: scan + research
     "bt_min_ivr": "Pre-filter watchlist symbols by IVR; symbols below this percentage are skipped before research (default 30).",
     "bt_max_per_symbol": "Cap candidate count per symbol from the researcher (default 3).",
