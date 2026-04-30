@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tasty Coach</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+</head>
+<body>
+  <header class="topbar">
+    <h1>tasty-coach <span class="account">{{ account_number }}</span></h1>
+    <div class="topbar-actions">
+      <span id="generated-at" class="muted"></span>
+      <button id="refresh-btn">Refresh</button>
+      <button id="settings-btn" class="ghost" title="Settings">⚙ Settings</button>
+      <button id="briefing-btn" class="primary">Run morning briefing</button>
+    </div>
+  </header>
+
+  <div id="settings-drawer" class="drawer hidden" aria-hidden="true">
+    <div class="drawer-backdrop" data-close></div>
+    <aside class="drawer-panel" role="dialog" aria-label="Settings">
+      <header class="drawer-head">
+        <h2>Settings</h2>
+        <button class="ghost" data-close title="Close">✕</button>
+      </header>
+      <div id="settings-body" class="drawer-body">
+        <div class="muted">Loading…</div>
+      </div>
+      <footer class="drawer-foot">
+        <button id="settings-reset-all" class="ghost">Reset all to defaults</button>
+        <span id="settings-status" class="muted"></span>
+      </footer>
+    </aside>
+  </div>
+
+  <main class="layout">
+    <section class="dash">
+      <div id="kpis" class="kpis">
+        <div class="kpi"><span class="kpi-label">NLV</span><span class="kpi-value" id="kpi-nlv">—</span></div>
+        <div class="kpi"><span class="kpi-label">BP usage</span><span class="kpi-value" id="kpi-bp">—</span></div>
+        <div class="kpi"><span class="kpi-label">Cash</span><span class="kpi-value" id="kpi-cash">—</span></div>
+        <div class="kpi"><span class="kpi-label">Δ</span><span class="kpi-value" id="kpi-delta">—</span></div>
+        <div class="kpi"><span class="kpi-label">Θ</span><span class="kpi-value" id="kpi-theta">—</span></div>
+        <div class="kpi"><span class="kpi-label">Positions</span><span class="kpi-value" id="kpi-pos">—</span></div>
+      </div>
+
+      <div class="panel scan-panel">
+        <div class="scan-head">
+          <h2>Trade Scan</h2>
+          <span id="scan-selcount" class="scan-selcount">0 selected</span>
+        </div>
+        <div class="scan-toolbar">
+          <input id="scan-search" type="search" placeholder="Search watchlists…" autocomplete="off">
+          <button id="scan-clear" class="ghost" title="Clear selection">Clear</button>
+        </div>
+        <div id="watchlist-picker" class="scan-list">
+          <span class="muted">Loading watchlists…</span>
+        </div>
+        <div class="scan-actions">
+          <button id="scan-start-btn" class="primary">Start scan</button>
+          <span id="scan-status" class="scan-status idle">idle</span>
+        </div>
+        <div id="scan-other" class="scan-other"></div>
+      </div>
+
+      <div id="picks-panel" class="panel picks-panel hidden">
+        <div class="picks-head">
+          <h2>Trade Picks</h2>
+          <span id="picks-meta" class="muted"></span>
+        </div>
+        <div id="picks-list"></div>
+        <details id="picks-rejections" class="picks-rejections">
+          <summary>Rejection summary</summary>
+          <div id="picks-rejections-body"></div>
+        </details>
+      </div>
+
+      <div class="panel">
+        <h2>Positions</h2>
+        <table id="positions-table">
+          <thead>
+            <tr>
+              <th>Underlying</th><th>Type</th><th>Dir</th><th>Strike</th>
+              <th>Exp</th><th>DTE</th><th>Qty</th><th>Avg open</th><th>Sector</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Alerts</h2>
+        <ul id="alerts-list"><li class="muted">Loading…</li></ul>
+      </div>
+
+      <div class="panel">
+        <div class="picks-head">
+          <h2>Recent Decisions</h2>
+          <span id="journal-meta" class="muted"></span>
+        </div>
+        <div id="journal-list" class="journal-list">
+          <div class="muted">Loading…</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="chat">
+      <div class="chat-header">
+        <h2>Coach</h2>
+        <button id="chat-reset-btn" class="ghost">New conversation</button>
+      </div>
+      <div id="chat-stream" class="chat-stream"></div>
+      <form id="chat-form" class="chat-form" autocomplete="off">
+        <input id="chat-input" type="text" placeholder="Ask about your account, positions, or trades…" maxlength="4000">
+        <button type="submit">Send</button>
+      </form>
+    </aside>
+  </main>
+
+  <script>window.TC_TOKEN = {{ token | tojson }};</script>
+  <script src="/static/chat.js?v={{ asset_version }}"></script>
+</body>
+</html>

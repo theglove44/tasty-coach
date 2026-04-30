@@ -80,6 +80,11 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-delta", type=float, default=None, help="Minimum absolute short delta (default: 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Maximum absolute short delta (default: 0.45)")
     parser.add_argument("--best-trades", action="store_true", help="Rank best trade ideas across watchlists")
+    parser.add_argument("--coach", action="store_true", help="AI coach: one-shot personalized daily briefing (uses Claude Max via CLAUDE_CODE_OAUTH_TOKEN)")
+    parser.add_argument("--chat", action="store_true", help="AI coach: interactive chat REPL")
+    parser.add_argument("--serve", action="store_true", help="Run the web dashboard (FastAPI + chat sidebar)")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind host for --serve (default 127.0.0.1; use 0.0.0.0 for LAN access)")
+    parser.add_argument("--port", type=int, default=8765, help="Bind port for --serve (default 8765)")
     parser.add_argument("--top", type=_nonneg_int, default=3, help="Number of top ideas to surface (use with --best-trades, default: 3)")
     parser.add_argument("--bt-watchlist", action="append", dest="bt_watchlist", metavar="NAME", help="Watchlist to include in --best-trades (repeatable; defaults: Chris Historical Trades, High Options Volume)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")
@@ -260,6 +265,26 @@ async def async_main() -> int:
                 default_threshold=args.threshold or client.config.ivr_threshold,
             )
             return await launcher.run()
+
+        if args.coach or args.chat:
+            from agents.coach import run_briefing, run_chat
+            from agents.coach_context import CoachContext
+
+            account_number = args.account or client.config.account_number
+            account = await client.get_account(account_number)
+            if not account:
+                print("❌ Could not resolve account.")
+                return 1
+            ctx = CoachContext(
+                session=session,
+                account=account,
+                account_number=getattr(account, "account_number", account_number),
+            )
+            if args.coach:
+                await run_briefing(ctx)
+            else:
+                await run_chat(ctx)
+            return 0
 
         if args.best_trades:
             from agents.trade_ranker import run_best_trades, _print_best_trades_text
@@ -669,6 +694,16 @@ async def async_main() -> int:
 
 
 def main() -> int:
+    # --serve runs uvicorn which manages its own event loop; intercept before
+    # asyncio.run() to avoid "asyncio.run() from a running event loop".
+    if "--serve" in sys.argv:
+        parser = setup_argument_parser()
+        args = parser.parse_args()
+        from server.app import serve as serve_app
+        from utils.tasty_client import TastyClient
+        cfg_acct = TastyClient().config.account_number
+        serve_app(host=args.host, port=args.port, account_number=args.account or cfg_acct)
+        return 0
     return asyncio.run(async_main())
 
 
