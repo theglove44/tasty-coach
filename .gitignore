@@ -64,3 +64,7 @@ cache/
 .coverage
 .pytest_cache/
 .tox/
+
+# Claude Code / agent tooling artifacts
+.claude/
+.memsearch/
