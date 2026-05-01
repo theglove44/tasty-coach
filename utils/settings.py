@@ -28,6 +28,7 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
+    "bt_per_trade_risk_dollars",  # may be None — when set, overrides bt_per_trade_risk_pct
 })
 INTEGER_KEYS: frozenset[str] = frozenset({
     "bt_earnings_blackout_days",
@@ -45,6 +46,7 @@ DEFAULTS: dict[str, Any] = {
     "bp_usage_warn": 0.50,
     "bp_usage_block": 0.50,
     "theta_target": None,
+    "bt_per_trade_risk_dollars": None,
     "concentration_pct_nlv_warn": 0.15,
     "bt_earnings_blackout_days": 7,
     "bt_min_dte": 21,
@@ -100,7 +102,8 @@ SETTINGS_DESCRIPTIONS: dict[str, str] = {
     "bt_max_pct_nlv_per_trade": "Reject candidates whose max-loss exceeds this fraction of NLV (0.05 = 5%).",
     "bt_bp_cap_for_new": "Reject if post-trade BP usage would exceed this fraction (0.50 = 50%).",
     "bt_concentration_overlap_block_pct": "Reject if combined exposure to one underlying exceeds this fraction of NLV.",
-    "bt_per_trade_risk_pct": "Per-trade risk budget for sizing recommendations (0.02 = 2% of NLV per spread).",
+    "bt_per_trade_risk_pct": "Per-trade risk budget for sizing recommendations (0.02 = 2% of NLV per spread). Ignored when bt_per_trade_risk_dollars is set.",
+    "bt_per_trade_risk_dollars": "Optional fixed-dollar per-trade risk budget. When set, takes precedence over bt_per_trade_risk_pct (handy for small accounts where 'I want to risk $250' is more intuitive than a percentage). Set to null/None to use the percentage instead.",
     # Best-Trades-Today: scan + research
     "bt_min_ivr": "Pre-filter watchlist symbols by IVR; symbols below this percentage are skipped before research (default 30).",
     "bt_max_per_symbol": "Cap candidate count per symbol from the researcher (default 3).",

@@ -353,6 +353,7 @@ def _load_thresholds() -> dict[str, Any]:
         "research_concurrency": settings.get("bt_research_concurrency"),
         "research_timeout_seconds": settings.get("bt_research_timeout_seconds"),
         "per_trade_risk_pct": settings.get("bt_per_trade_risk_pct"),
+        "per_trade_risk_dollars": settings.get("bt_per_trade_risk_dollars"),
         "csp_min_otm_pct": settings.get("bt_csp_min_otm_pct"),
         "csp_min_annualized_return": settings.get("bt_csp_min_annualized_return"),
         "csp_skew_warn_threshold": settings.get("bt_csp_skew_warn_threshold"),
@@ -413,12 +414,14 @@ def _candidate_to_dict(
     c: Candidate,
     account_state: Optional[AccountState] = None,
     per_trade_risk_pct: Optional[float] = None,
+    per_trade_risk_dollars: Optional[float] = None,
 ) -> dict[str, Any]:
     """Serialize a Candidate to a JSON-safe dict for the top-trades output.
 
-    When ``account_state`` and ``per_trade_risk_pct`` are provided, also emits
-    ``recommended_contracts``, ``pct_nlv_at_risk``, and ``sector`` so the AI
-    coach (and the text printer) can show personalized sizing.
+    When ``account_state`` is provided plus either ``per_trade_risk_dollars``
+    (fixed-dollar budget, takes precedence) or ``per_trade_risk_pct`` (NLV
+    fraction), emits ``recommended_contracts``, ``pct_nlv_at_risk``, and
+    ``sector`` so the AI coach and text printer can show personalized sizing.
     """
     payload: dict[str, Any] = {
         "symbol": c.symbol,
@@ -457,14 +460,26 @@ def _candidate_to_dict(
         dollar_risk = _dollar_max_loss(c)
         payload["max_loss_dollars"] = dollar_risk
         payload["pct_nlv_at_risk_one_contract"] = dollar_risk / account_state.nlv
-        if per_trade_risk_pct and per_trade_risk_pct > 0:
+        # Fixed-dollar budget takes precedence over the percentage-of-NLV
+        # budget. The dollar form is more intuitive at small accounts where
+        # "I want to risk $250" is sharper than "5% of NLV".
+        budget: Optional[float] = None
+        budget_basis: Optional[str] = None
+        if per_trade_risk_dollars is not None and per_trade_risk_dollars > 0:
+            budget = float(per_trade_risk_dollars)
+            budget_basis = "dollars"
+        elif per_trade_risk_pct and per_trade_risk_pct > 0:
             budget = account_state.nlv * per_trade_risk_pct
+            budget_basis = "pct_nlv"
+        if budget is not None:
             recommended = int(budget // dollar_risk)
             # If a single contract already exceeds the budget, recommend 0 (skip).
             payload["recommended_contracts"] = recommended
             payload["pct_nlv_at_risk"] = (
                 recommended * dollar_risk / account_state.nlv
             )
+            payload["risk_budget_dollars"] = budget
+            payload["risk_budget_basis"] = budget_basis
 
     return payload
 
@@ -673,7 +688,12 @@ async def run_best_trades(
     )
     selected = _select_top_per_symbol(scored, top)
     result["top"] = [
-        _candidate_to_dict(c, account_state=account_state, per_trade_risk_pct=thresholds.get("per_trade_risk_pct"))
+        _candidate_to_dict(
+            c,
+            account_state=account_state,
+            per_trade_risk_pct=thresholds.get("per_trade_risk_pct"),
+            per_trade_risk_dollars=thresholds.get("per_trade_risk_dollars"),
+        )
         for c in selected
     ]
     result["csp_skew_warn_threshold"] = thresholds.get("csp_skew_warn_threshold")
@@ -744,14 +764,21 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
 
             recommended = item.get("recommended_contracts")
             pct_at_risk = item.get("pct_nlv_at_risk")
+            budget_dollars = item.get("risk_budget_dollars")
+            budget_basis = item.get("risk_budget_basis")
+            budget_tag = ""
+            if budget_dollars is not None and budget_basis == "dollars":
+                budget_tag = f" [budget ${budget_dollars:.0f}]"
+            elif budget_dollars is not None and budget_basis == "pct_nlv":
+                budget_tag = f" [budget ${budget_dollars:.0f} = pct NLV]"
             if recommended is not None:
                 if recommended == 0:
                     one_pct = item.get("pct_nlv_at_risk_one_contract")
                     skip_str = f" (1 contract = {one_pct * 100:.1f}% NLV)" if one_pct is not None else ""
-                    print(f"    Recommended size: SKIP — exceeds per-trade risk budget{skip_str}")
+                    print(f"    Recommended size: SKIP — exceeds per-trade risk budget{skip_str}{budget_tag}")
                 else:
                     pct_str = f" ({pct_at_risk * 100:.1f}% NLV at risk)" if pct_at_risk is not None else ""
-                    print(f"    Recommended size: {recommended} contract{'s' if recommended != 1 else ''}{pct_str}")
+                    print(f"    Recommended size: {recommended} contract{'s' if recommended != 1 else ''}{pct_str}{budget_tag}")
             sector_tag = item.get("sector")
             if sector_tag:
                 print(f"    Sector: {sector_tag}")

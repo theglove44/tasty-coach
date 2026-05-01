@@ -450,6 +450,56 @@ class TestCspScoringEdgeCases(unittest.TestCase):
         self.assertLessEqual(score, 25.0)
 
 
+class TestPerTradeRiskDollarsOverride(unittest.TestCase):
+    """bt_per_trade_risk_dollars takes precedence over bt_per_trade_risk_pct."""
+
+    def _state(self, nlv=4000.0):
+        return AccountState(nlv=nlv, bp_usage_pct=0.10, existing_exposures={})
+
+    def test_dollar_budget_used_when_provided(self):
+        # 5-strike CSP at $0.40 credit on $4k NLV: max_loss=$460/contract.
+        # $250 dollar budget → 0 contracts (1 contract = $460 > $250 budget).
+        # $500 dollar budget → 1 contract.
+        c = _make_csp_candidate(strike=5.0, credit=0.40, spot=6.0)
+        d_skip = _candidate_to_dict(c, account_state=self._state(),
+                                     per_trade_risk_dollars=250.0,
+                                     per_trade_risk_pct=0.50)
+        self.assertEqual(d_skip["recommended_contracts"], 0)
+        self.assertEqual(d_skip["risk_budget_basis"], "dollars")
+        self.assertEqual(d_skip["risk_budget_dollars"], 250.0)
+
+        d_ok = _candidate_to_dict(c, account_state=self._state(),
+                                   per_trade_risk_dollars=500.0,
+                                   per_trade_risk_pct=0.01)
+        self.assertEqual(d_ok["recommended_contracts"], 1)
+        self.assertEqual(d_ok["risk_budget_basis"], "dollars")
+
+    def test_pct_used_when_dollars_none(self):
+        c = _make_csp_candidate(strike=5.0, credit=0.40, spot=6.0)
+        d = _candidate_to_dict(c, account_state=self._state(),
+                                per_trade_risk_dollars=None,
+                                per_trade_risk_pct=0.10)
+        # 10% of $4k = $400 budget; max_loss=$460/contract → 0 contracts
+        self.assertEqual(d["recommended_contracts"], 0)
+        self.assertEqual(d["risk_budget_basis"], "pct_nlv")
+        self.assertAlmostEqual(d["risk_budget_dollars"], 400.0, places=2)
+
+    def test_dollars_zero_falls_through_to_pct(self):
+        c = _make_csp_candidate(strike=5.0, credit=0.40, spot=6.0)
+        d = _candidate_to_dict(c, account_state=self._state(),
+                                per_trade_risk_dollars=0.0,
+                                per_trade_risk_pct=0.20)
+        self.assertEqual(d["risk_budget_basis"], "pct_nlv")
+
+    def test_neither_set_omits_budget_fields(self):
+        c = _make_csp_candidate(strike=5.0, credit=0.40, spot=6.0)
+        d = _candidate_to_dict(c, account_state=self._state(),
+                                per_trade_risk_dollars=None,
+                                per_trade_risk_pct=None)
+        self.assertNotIn("recommended_contracts", d)
+        self.assertNotIn("risk_budget_dollars", d)
+
+
 class TestSkewDistanceGate(unittest.TestCase):
     def test_returns_none_when_no_leg_near_reference(self):
         # Only deep-ITM put and deep-OTM call available — too far from 25Δ.
