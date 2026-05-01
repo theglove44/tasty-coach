@@ -59,6 +59,22 @@ class TestBestTradesArgparse(unittest.TestCase):
         self.assertEqual(args.watchlist, "Foo")
         self.assertIsNone(args.bt_watchlist)
 
+    def test_help_lists_put_selector_flag(self):
+        help_text = self.parser.format_help()
+        self.assertIn("--put-selector", help_text)
+
+    def test_put_selector_defaults(self):
+        args = self.parser.parse_args(["--put-selector"])
+        self.assertTrue(args.put_selector)
+        self.assertFalse(args.best_trades)
+        self.assertEqual(args.top, 3)
+
+    def test_put_selector_with_journal_and_top(self):
+        args = self.parser.parse_args(["--put-selector", "--top", "5", "--journal"])
+        self.assertTrue(args.put_selector)
+        self.assertTrue(args.journal)
+        self.assertEqual(args.top, 5)
+
 
 class TestRunBestTradesStub(unittest.IsolatedAsyncioTestCase):
     """Smoke tests on run_best_trades that mock scan_watchlists to skip real I/O."""
@@ -110,6 +126,30 @@ class TestRunBestTradesStub(unittest.IsolatedAsyncioTestCase):
         mock_scan.return_value = ([], [])
         result = await run_best_trades(MagicMock(), output_format="json")
         self.assertGreaterEqual(set(result.keys()), {"top", "rejected", "warnings", "watchlists"})
+
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_structure_filter_threaded_through(self, mock_scan, mock_gen):
+        # When run_best_trades receives structure_filter, it must pass through
+        # to generate_candidates so the researcher's CSP ideas survive while
+        # spread ideas are dropped.
+        from agents.trade_ranker import run_best_trades, SymbolContext
+        # iv_rank=99 to clear the IVR pre-filter regardless of user settings.
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=99.0)], [])
+        mock_gen.return_value = ([], [])
+        await run_best_trades(MagicMock(), structure_filter="CASH_SECURED_PUT")
+        kwargs = mock_gen.await_args.kwargs
+        self.assertEqual(kwargs.get("structure_filter"), "CASH_SECURED_PUT")
+
+    @patch("agents.trade_ranker.generate_candidates", new_callable=AsyncMock)
+    @patch("agents.trade_ranker.scan_watchlists", new_callable=AsyncMock)
+    async def test_structure_filter_none_when_omitted(self, mock_scan, mock_gen):
+        from agents.trade_ranker import run_best_trades, SymbolContext
+        mock_scan.return_value = ([SymbolContext(symbol="AAPL", iv_rank=99.0)], [])
+        mock_gen.return_value = ([], [])
+        await run_best_trades(MagicMock())
+        kwargs = mock_gen.await_args.kwargs
+        self.assertIsNone(kwargs.get("structure_filter"))
 
 
 class TestBestTradesCliOutput(unittest.IsolatedAsyncioTestCase):

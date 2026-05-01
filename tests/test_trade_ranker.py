@@ -501,7 +501,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c.symbol for c in candidates], ["AAPL", "MSFT"])
 
     async def test_research_timeout_emits_rejection(self):
-        async def hang(symbol):
+        async def hang(symbol, **_kw):
             await asyncio.sleep(10)
             return _make_ok_report(symbol=symbol)
         researcher = MagicMock()
@@ -520,7 +520,7 @@ class TestGenerateCandidates(unittest.IsolatedAsyncioTestCase):
         peak = 0
         lock = asyncio.Lock()
 
-        async def slow(symbol):
+        async def slow(symbol, **_kw):
             nonlocal active, peak
             async with lock:
                 active += 1
@@ -1425,6 +1425,10 @@ class TestLoadThresholds(unittest.TestCase):
                 "research_concurrency",
                 "research_timeout_seconds",
                 "per_trade_risk_pct",
+                "csp_min_otm_pct",
+                "csp_min_annualized_return",
+                "csp_skew_warn_threshold",
+                "csp_max_pct_nlv_per_trade",
             },
         )
         expected_calls = [
@@ -1441,6 +1445,10 @@ class TestLoadThresholds(unittest.TestCase):
             "bt_research_concurrency",
             "bt_research_timeout_seconds",
             "bt_per_trade_risk_pct",
+            "bt_csp_min_otm_pct",
+            "bt_csp_min_annualized_return",
+            "bt_csp_skew_warn_threshold",
+            "bt_csp_max_pct_nlv_per_trade",
         ]
         actual_calls = [call.args[0] for call in mock_settings.get.call_args_list]
         self.assertEqual(set(actual_calls), set(expected_calls))

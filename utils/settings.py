@@ -19,6 +19,12 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
     "bt_concentration_overlap_block_pct",
     "bt_min_ivr",
     "bt_per_trade_risk_pct",
+    "bt_csp_delta_min",
+    "bt_csp_delta_max",
+    "bt_csp_min_otm_pct",
+    "bt_csp_min_annualized_return",
+    "bt_csp_skew_warn_threshold",
+    "bt_csp_max_pct_nlv_per_trade",
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
@@ -31,6 +37,7 @@ INTEGER_KEYS: frozenset[str] = frozenset({
     "bt_max_per_symbol",
     "bt_research_concurrency",
     "bt_research_timeout_seconds",
+    "bt_csp_max_per_symbol",
 })
 
 DEFAULTS: dict[str, Any] = {
@@ -52,6 +59,21 @@ DEFAULTS: dict[str, Any] = {
     "bt_min_ivr": 30.0,
     "bt_research_concurrency": 5,
     "bt_research_timeout_seconds": 90,
+    # Cash-secured-put screener (--put-selector). Income profile by default
+    # (lower delta, expire-worthless preferred); raise the delta range for
+    # wheel entries.
+    "bt_csp_delta_min": 0.15,
+    "bt_csp_delta_max": 0.30,
+    "bt_csp_min_otm_pct": 0.03,
+    "bt_csp_min_annualized_return": 0.10,
+    "bt_csp_skew_warn_threshold": 1.20,
+    "bt_csp_max_per_symbol": 5,
+    # CSPs need a more permissive size cap than spreads — assignment-to-zero
+    # max-loss is much larger than spread max-loss, but the user is choosing
+    # to be cash-secured so they're underwriting the full strike. Default 0.30
+    # = 30% of NLV per trade (per contract). Spread cap (bt_max_pct_nlv_per_trade)
+    # stays at 5% for verticals.
+    "bt_csp_max_pct_nlv_per_trade": 0.30,
     "alert_toggles": {
         "position_size": True,
         "bp": True,
@@ -84,6 +106,14 @@ SETTINGS_DESCRIPTIONS: dict[str, str] = {
     "bt_max_per_symbol": "Cap candidate count per symbol from the researcher (default 3).",
     "bt_research_concurrency": "Number of symbols researched in parallel (default 5; raise for speed at the cost of API load).",
     "bt_research_timeout_seconds": "Per-symbol hard timeout in seconds; symbols exceeding this become research_timeout rejections (default 45).",
+    # Cash-secured-put screener (--put-selector)
+    "bt_csp_delta_min": "Minimum |short delta| for cash-secured-put candidates (default 0.15 = ~15Δ).",
+    "bt_csp_delta_max": "Maximum |short delta| for cash-secured-put candidates (default 0.30 = ~30Δ; raise for wheel entries).",
+    "bt_csp_min_otm_pct": "Minimum buffer below spot to qualify a CSP strike (0.03 = 3%).",
+    "bt_csp_min_annualized_return": "Floor for the income score; (credit*365/dte)/strike below this earns 0 (default 0.10 = 10%).",
+    "bt_csp_skew_warn_threshold": "Put/call IV ratio at ~25Δ that triggers the elevated-skew warning (default 1.20).",
+    "bt_csp_max_per_symbol": "Cap on CSP ideas emitted per symbol per scan (default 5; trim by premium desc).",
+    "bt_csp_max_pct_nlv_per_trade": "Per-trade size cap for CSPs as fraction of NLV (assignment-to-zero max-loss / NLV). Default 0.30 = 30% — separate from the spread cap because cash-secured assignment carries the full strike.",
 }
 
 CONFIG_DIR = Path.home() / ".tasty-coach"
