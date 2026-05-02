@@ -20,7 +20,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 
 from claude_agent_sdk import ClaudeSDKClient
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -60,6 +60,7 @@ SETTINGS_GROUPS: list[dict[str, Any]] = [
         "id": "sizing",
         "label": "Sizing & Account Fit",
         "keys": [
+            "bt_per_trade_risk_dollars",
             "bt_per_trade_risk_pct",
             "bt_max_pct_nlv_per_trade",
             "bt_bp_cap_for_new",
@@ -76,6 +77,19 @@ SETTINGS_GROUPS: list[dict[str, Any]] = [
             "bt_min_open_interest",
             "bt_max_spread_pct",
             "bt_earnings_blackout_days",
+        ],
+    },
+    {
+        "id": "csp",
+        "label": "Cash-Secured Puts (--put-selector)",
+        "keys": [
+            "bt_csp_delta_min",
+            "bt_csp_delta_max",
+            "bt_csp_min_otm_pct",
+            "bt_csp_min_annualized_return",
+            "bt_csp_skew_warn_threshold",
+            "bt_csp_max_per_symbol",
+            "bt_csp_max_pct_nlv_per_trade",
         ],
     },
     {
@@ -211,18 +225,39 @@ def _check_token(request: Request, token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing token")
 
 
-CacheKey = tuple[str, frozenset[str]]
+# Cache key: (account_number, frozenset[watchlists], structure_filter | None).
+# Structure is part of the key so spread vs CSP results cache independently.
+CacheKey = tuple[str, frozenset[str], Optional[str]]
+
+# UI shorthand → canonical structure name passed to run_best_trades.
+_STRUCTURE_ALIASES: dict[str, str] = {
+    "csp": "CASH_SECURED_PUT",
+    "cash_secured_put": "CASH_SECURED_PUT",
+}
 
 
-def _bt_key(account: str, watchlists: Any) -> CacheKey:
-    """Normalise a watchlist selection into a stable cache key."""
-    if not watchlists:
-        return (account, frozenset())
-    return (account, frozenset(str(w) for w in watchlists))
+def _normalize_structure(structure: Optional[str]) -> Optional[str]:
+    """Map UI alias (or None) to the canonical structure_filter value."""
+    if not structure:
+        return None
+    cleaned = structure.strip()
+    if not cleaned:
+        return None
+    return _STRUCTURE_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def _bt_key(account: str, watchlists: Any, structure: Optional[str] = None) -> CacheKey:
+    """Normalise a watchlist + structure selection into a stable cache key."""
+    wl = frozenset(str(w) for w in watchlists) if watchlists else frozenset()
+    return (account, wl, _normalize_structure(structure))
 
 
 def _key_to_list(key: CacheKey) -> list[str]:
     return sorted(key[1])
+
+
+def _key_structure(key: CacheKey) -> Optional[str]:
+    return key[2] if len(key) >= 3 else None
 
 
 def _bt_cached(app: FastAPI, key: CacheKey) -> dict[str, Any] | None:
@@ -244,12 +279,18 @@ def _bt_inflight_for_account(app: FastAPI, account: str) -> CacheKey | None:
     return None
 
 
-async def _bt_run_and_cache(app: FastAPI, ctx: CoachContext, watchlists: list[str]) -> dict[str, Any]:
+async def _bt_run_and_cache(
+    app: FastAPI,
+    ctx: CoachContext,
+    watchlists: list[str],
+    structure: Optional[str] = None,
+) -> dict[str, Any]:
     """Run run_best_trades once for the given selection; store in the cache.
 
-    Cache key is (account_number, frozenset[watchlists]) so distinct selections
-    cache independently."""
-    key = _bt_key(ctx.account_number, watchlists)
+    Cache key is (account_number, frozenset[watchlists], structure) so distinct
+    selections cache independently. ``structure`` is the canonical name
+    (e.g. "CASH_SECURED_PUT") or None for all structures."""
+    key = _bt_key(ctx.account_number, watchlists, structure)
     try:
         result = await run_best_trades(
             ctx.session,
@@ -257,6 +298,7 @@ async def _bt_run_and_cache(app: FastAPI, ctx: CoachContext, watchlists: list[st
             top=3,
             output_format="json",
             account_number=ctx.account_number,
+            structure_filter=structure,
         )
         if isinstance(result.get("rejected"), list):
             rej = result["rejected"]
@@ -270,8 +312,9 @@ async def _bt_run_and_cache(app: FastAPI, ctx: CoachContext, watchlists: list[st
             result.pop("rejected", None)
         app.state.bt_cache[key] = (time.time(), result)
         logger.info(
-            "best-trades cached for %s %s (%d picks)",
-            ctx.account_number, sorted(watchlists), len(result.get("top") or []),
+            "best-trades cached for %s %s (structure=%s, %d picks)",
+            ctx.account_number, sorted(watchlists), structure or "all",
+            len(result.get("top") or []),
         )
         return result
     finally:
@@ -366,11 +409,12 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
                 continue
             cached.append({
                 "watchlists": _key_to_list(k),
+                "structure": _key_structure(k),
                 "age_sec": int(now - ts),
                 "picks": len(payload.get("top") or []),
             })
         inflight = [
-            {"watchlists": _key_to_list(k)}
+            {"watchlists": _key_to_list(k), "structure": _key_structure(k)}
             for k in request.app.state.bt_inflight
             if k[0] == ctx.account_number
         ]
@@ -412,18 +456,20 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
         return JSONResponse({"watchlists": items})
 
     def _scan_state(app: FastAPI, key: CacheKey) -> dict[str, Any]:
-        """Synthesise a state dict for a (account, watchlists) selection.
+        """Synthesise a state dict for a (account, watchlists, structure) selection.
 
         When state=='ready', also includes ``top`` (full pick payloads) and
         ``rejected_summary`` so the dashboard can render the picks without an
         extra round trip.
         """
+        structure = _key_structure(key)
         cached = _bt_cached(app, key)
         if cached is not None:
             ts = app.state.bt_cache[key][0]
             return {
                 "state": "ready",
                 "watchlists": _key_to_list(key),
+                "structure": structure,
                 "age_sec": int(time.time() - ts),
                 "picks": len(cached.get("top") or []),
                 "top": cached.get("top") or [],
@@ -432,20 +478,22 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
                 "warnings": cached.get("warnings") or [],
             }
         if key in app.state.bt_inflight:
-            return {"state": "inflight", "watchlists": _key_to_list(key)}
-        return {"state": "idle", "watchlists": _key_to_list(key)}
+            return {"state": "inflight", "watchlists": _key_to_list(key), "structure": structure}
+        return {"state": "idle", "watchlists": _key_to_list(key), "structure": structure}
 
     @app.post("/api/scan/start")
     async def api_scan_start(
         request: Request,
         watchlists: list[str] = Query(default_factory=list),
+        structure: str | None = Query(default=None),
         token: str | None = Query(default=None),
     ) -> JSONResponse:
         _check_token(request, token)
         if not watchlists:
             raise HTTPException(status_code=400, detail="watchlists query param is required")
+        canonical_structure = _normalize_structure(structure)
         ctx = await _build_ctx(request.app)
-        key = _bt_key(ctx.account_number, watchlists)
+        key = _bt_key(ctx.account_number, watchlists, canonical_structure)
 
         # Already cached?
         if _bt_cached(request.app, key) is not None:
@@ -466,7 +514,9 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
         if not _data_feed_likely_alive(ctx.session):
             raise HTTPException(status_code=409, detail="market closed — trade scan unavailable")
 
-        task = asyncio.create_task(_bt_run_and_cache(request.app, ctx, list(watchlists)))
+        task = asyncio.create_task(
+            _bt_run_and_cache(request.app, ctx, list(watchlists), canonical_structure)
+        )
         request.app.state.bt_inflight[key] = task
         return JSONResponse({"started": True, "status": "started", **_scan_state(request.app, key)})
 
@@ -474,26 +524,30 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
     async def api_scan_status(
         request: Request,
         watchlists: list[str] = Query(default_factory=list),
+        structure: str | None = Query(default=None),
         token: str | None = Query(default=None),
     ) -> JSONResponse:
         _check_token(request, token)
         if not watchlists:
             raise HTTPException(status_code=400, detail="watchlists query param is required")
+        canonical_structure = _normalize_structure(structure)
         ctx = await _build_ctx(request.app)
-        key = _bt_key(ctx.account_number, watchlists)
+        key = _bt_key(ctx.account_number, watchlists, canonical_structure)
         return JSONResponse(_scan_state(request.app, key))
 
     @app.get("/api/briefing")
     async def api_briefing(
         request: Request,
         watchlists: list[str] = Query(default_factory=list),
+        structure: str | None = Query(default=None),
         token: str | None = Query(default=None),
     ) -> EventSourceResponse:
         _check_token(request, token)
         if not watchlists:
             raise HTTPException(status_code=400, detail="watchlists query param is required")
+        canonical_structure = _normalize_structure(structure)
         ctx = await _build_ctx(request.app)
-        key = _bt_key(ctx.account_number, watchlists)
+        key = _bt_key(ctx.account_number, watchlists, canonical_structure)
 
         async def event_source() -> AsyncIterator[dict[str, Any]]:
             try:
