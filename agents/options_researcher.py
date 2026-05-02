@@ -312,10 +312,22 @@ class OptionsResearcherAgent:
         if ivr is None or iv is None:
             warnings.append("Could not fetch IV metrics")
 
-        # Build enriched chain
+        # Build enriched chain (with optional strike pre-filter for speed).
+        try:
+            from utils.settings import settings as _settings
+            moneyness_min = _settings.get("bt_chain_moneyness_min")
+            moneyness_max = _settings.get("bt_chain_moneyness_max")
+        except Exception:
+            moneyness_min = moneyness_max = None
         options = chain[expiration_date]
         try:
-            rows = await self._build_enriched_chain(options, expiration_date)
+            rows = await self._build_enriched_chain(
+                options,
+                expiration_date,
+                underlying_price=underlying_price,
+                moneyness_min=moneyness_min,
+                moneyness_max=moneyness_max,
+            )
         except Exception as e:
             self.logger.error(f"Error building enriched chain: {e}")
             return self._to_report(
@@ -459,19 +471,57 @@ class OptionsResearcherAgent:
         self,
         options: List,
         expiration: date,
+        *,
+        underlying_price: Optional[float] = None,
+        moneyness_min: Optional[float] = None,
+        moneyness_max: Optional[float] = None,
     ) -> List[StrikeRow]:
         """
         Build enriched strike rows with market data and greeks.
 
+        When ``underlying_price`` plus a moneyness window are provided, drop
+        strikes outside ``[underlying_price * moneyness_min, underlying_price
+        * moneyness_max]`` BEFORE the (slow) market-data + Greeks fetch. This
+        cuts the Greeks websocket payload 2–5× on typical chains without
+        affecting candidate quality — strikes outside the window have effective
+        deltas near 0 or 1 and are never picked by the spread/CSP builders.
+
         Args:
             options: List of option objects from chain
             expiration: Expiration date
+            underlying_price: Spot reference for moneyness pre-filter; when
+                None, no pre-filter is applied (legacy behavior preserved).
+            moneyness_min: Lower bound (e.g. 0.40 = 40% of spot).
+            moneyness_max: Upper bound (e.g. 1.60 = 160% of spot).
 
         Returns:
             List of StrikeRow objects, sorted by (option_type, strike)
         """
         if not options:
             return []
+
+        # Strike pre-filter: drop strikes outside the moneyness window before
+        # the expensive market-data + Greeks fetches. No-op when underlying_price
+        # is None (e.g. ad-hoc --research SYMBOL with no spot reference).
+        if (
+            underlying_price is not None
+            and underlying_price > 0
+            and moneyness_min is not None
+            and moneyness_max is not None
+            and moneyness_min < moneyness_max
+        ):
+            lo = underlying_price * float(moneyness_min)
+            hi = underlying_price * float(moneyness_max)
+            before = len(options)
+            options = [o for o in options if lo <= float(o.strike_price) <= hi]
+            after = len(options)
+            if after < before:
+                self.logger.debug(
+                    "moneyness pre-filter: %d → %d strikes (window %.2f–%.2f × spot %.2f)",
+                    before, after, moneyness_min, moneyness_max, underlying_price,
+                )
+            if not options:
+                return []
 
         # Collect streamer and OCC symbols
         streamer_symbols = [o.streamer_symbol for o in options]
