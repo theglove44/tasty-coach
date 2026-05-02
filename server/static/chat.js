@@ -25,6 +25,12 @@ function withToken(url) {
   return u.toString();
 }
 
+function getScanStructure() {
+  // Returns "csp" when the CSP toggle is checked, else null.
+  const el = document.getElementById("scan-csp-toggle");
+  return el && el.checked ? "csp" : null;
+}
+
 async function loadSnapshot() {
   const res = await fetch(withToken("/api/snapshot"));
   if (!res.ok) {
@@ -84,20 +90,29 @@ function renderJournalEntry(e) {
 function renderOtherScans(cached, inflight) {
   const host = document.getElementById("scan-other");
   const sel = new Set(getSelectedWatchlists());
-  const sameSet = (a) => a.length === sel.size && a.every((x) => sel.has(x));
+  const curStruct = getScanStructure();
+  const sameKey = (entry) => {
+    if (entry.watchlists.length !== sel.size) return false;
+    if (!entry.watchlists.every((x) => sel.has(x))) return false;
+    const entryStruct = entry.structure === "CASH_SECURED_PUT" ? "csp" : null;
+    return entryStruct === curStruct;
+  };
+  const labelStruct = (s) => (s === "CASH_SECURED_PUT" ? " · CSP" : "");
   const chips = [];
   for (const c of cached) {
-    if (sameSet(c.watchlists)) continue;
+    if (sameKey(c)) continue;
     chips.push({
-      label: `cached: ${c.watchlists.join(", ")} (${c.age_sec}s, ${c.picks} picks)`,
+      label: `cached: ${c.watchlists.join(", ")}${labelStruct(c.structure)} (${c.age_sec}s, ${c.picks} picks)`,
       watchlists: c.watchlists,
+      structure: c.structure,
     });
   }
   for (const i of inflight) {
-    if (sameSet(i.watchlists)) continue;
+    if (sameKey(i)) continue;
     chips.push({
-      label: `scanning: ${i.watchlists.join(", ")}`,
+      label: `scanning: ${i.watchlists.join(", ")}${labelStruct(i.structure)}`,
       watchlists: i.watchlists,
+      structure: i.structure,
     });
   }
   host.innerHTML = chips
@@ -107,6 +122,9 @@ function renderOtherScans(cached, inflight) {
     const idx = Number(el.dataset.idx);
     el.addEventListener("click", () => {
       setSelectedWatchlists(chips[idx].watchlists);
+      // Switch the CSP toggle to match the chip's structure.
+      const toggle = document.getElementById("scan-csp-toggle");
+      if (toggle) toggle.checked = chips[idx].structure === "CASH_SECURED_PUT";
       pollScanStatus();
     });
   });
@@ -256,6 +274,8 @@ document.getElementById("briefing-btn").addEventListener("click", async (ev) => 
   try {
     const url = new URL("/api/briefing", window.location.origin);
     for (const w of watchlists) url.searchParams.append("watchlists", w);
+    const struct = getScanStructure();
+    if (struct) url.searchParams.set("structure", struct);
     url.searchParams.set("token", TOKEN);
     await streamSSE(url.toString(), refs);
   } finally {
@@ -452,6 +472,8 @@ async function pollScanStatus() {
   }
   const url = new URL("/api/scan/status", window.location.origin);
   for (const w of sel) url.searchParams.append("watchlists", w);
+  const struct = getScanStructure();
+  if (struct) url.searchParams.set("structure", struct);
   url.searchParams.set("token", TOKEN);
   let st;
   try {
@@ -518,12 +540,11 @@ function renderPicksPanel(st) {
 }
 
 function renderPickCard(p) {
-  const fmt2 = (v) => (v == null ? "—" : Number(v).toFixed(2));
   const fmt0 = (v) => (v == null ? "—" : Math.round(Number(v)));
   const credit = p.credit != null ? `$${(p.credit * 100).toFixed(0)}` : "—";
-  const maxLoss = p.max_loss_dollars != null ? `$${fmt0(p.max_loss_dollars)}` : (p.max_loss != null ? `$${(p.max_loss * 100).toFixed(0)}` : "—");
   const delta = p.short_delta != null ? Number(p.short_delta).toFixed(2) : "—";
   const score = p.score != null ? `${Number(p.score).toFixed(1)}/100` : "";
+  const isCSP = p.structure === "CASH_SECURED_PUT";
 
   const legsLine = (p.legs || [])
     .map((leg) => {
@@ -535,16 +556,58 @@ function renderPickCard(p) {
     })
     .join("  /  ");
 
+  // Top-row metric cells: spreads vs CSPs surface different fields.
+  let row2Html = "";
+  if (isCSP) {
+    const cashReq = p.cash_required != null ? `$${fmt0(p.cash_required).toLocaleString()}` : "—";
+    const ann = p.annualized_return != null ? `${(p.annualized_return * 100).toFixed(1)}%` : "—";
+    const buf = p.pct_otm != null ? `${(p.pct_otm * 100).toFixed(1)}%` : "—";
+    const pop = p.pop_estimate != null ? `${(p.pop_estimate * 100).toFixed(0)}%` : "—";
+    const ppd = p.premium_per_day != null ? `$${(p.premium_per_day * 100).toFixed(2)}/d` : "—";
+    row2Html = `
+      <div class="pick-row2">
+        <span><span class="label">EXP</span><span class="num">${escapeHtml(p.expiration || "")}</span></span>
+        <span><span class="label">DTE</span><span class="num">${p.dte ?? "—"}</span></span>
+        <span><span class="label">CREDIT</span><span class="num">${credit}</span></span>
+        <span><span class="label">CASH REQ</span><span class="num">${cashReq}</span></span>
+        <span><span class="label">ANNUALIZED</span><span class="num">${ann}</span></span>
+        <span><span class="label">BUFFER</span><span class="num">${buf} OTM</span></span>
+        <span><span class="label">POP</span><span class="num">${pop}</span></span>
+        <span><span class="label">PREMIUM/DAY</span><span class="num">${ppd}</span></span>
+        <span><span class="label">SHORT Δ</span><span class="num">${delta}</span></span>
+        ${p.sector ? `<span><span class="label">SECTOR</span>${escapeHtml(p.sector)}</span>` : ""}
+      </div>`;
+  } else {
+    const maxLoss = p.max_loss_dollars != null ? `$${fmt0(p.max_loss_dollars)}` : (p.max_loss != null ? `$${(p.max_loss * 100).toFixed(0)}` : "—");
+    row2Html = `
+      <div class="pick-row2">
+        <span><span class="label">EXP</span><span class="num">${escapeHtml(p.expiration || "")}</span></span>
+        <span><span class="label">DTE</span><span class="num">${p.dte ?? "—"}</span></span>
+        <span><span class="label">CREDIT</span><span class="num">${credit}</span></span>
+        <span><span class="label">MAX LOSS</span><span class="num">${maxLoss}</span></span>
+        <span><span class="label">SHORT Δ</span><span class="num">${delta}</span></span>
+        ${p.sector ? `<span><span class="label">SECTOR</span>${escapeHtml(p.sector)}</span>` : ""}
+      </div>`;
+  }
+
   const rec = p.recommended_contracts;
   const pctRisk = p.pct_nlv_at_risk;
   const pct1 = p.pct_nlv_at_risk_one_contract;
+  const budget = p.risk_budget_dollars;
+  const budgetTag = budget != null ? ` [budget $${fmt0(budget)}]` : "";
   let sizeHTML = "";
   if (rec === 0) {
     const oneStr = pct1 != null ? ` — 1 contract = ${(pct1 * 100).toFixed(1)}% NLV` : "";
-    sizeHTML = `<div class="pick-size size-skip">SKIP: exceeds per-trade risk budget${oneStr}</div>`;
+    sizeHTML = `<div class="pick-size size-skip">SKIP: exceeds per-trade risk budget${oneStr}${budgetTag}</div>`;
   } else if (rec != null) {
     const pctStr = pctRisk != null ? ` (${(pctRisk * 100).toFixed(1)}% NLV at risk)` : "";
-    sizeHTML = `<div class="pick-size size-ok">Recommended size: ${rec} contract${rec === 1 ? "" : "s"}${pctStr}</div>`;
+    sizeHTML = `<div class="pick-size size-ok">Recommended size: ${rec} contract${rec === 1 ? "" : "s"}${pctStr}${budgetTag}</div>`;
+  }
+
+  // CSP elevated-skew warning (article's "hidden risk" signal).
+  let skewHTML = "";
+  if (isCSP && p.put_call_skew != null && p.put_call_skew >= 1.20) {
+    skewHTML = `<div class="pick-skew-warn">⚠ put/call skew ${p.put_call_skew.toFixed(2)} — elevated downside fear; consider smaller size or vertical</div>`;
   }
 
   return `
@@ -553,15 +616,9 @@ function renderPickCard(p) {
         <span><span class="pick-symbol">${escapeHtml(p.symbol)}</span> <span class="pick-structure">${escapeHtml(p.structure || "")}</span></span>
         <span class="pick-score">${escapeHtml(score)}</span>
       </div>
-      <div class="pick-row2">
-        <span><span class="label">EXP</span><span class="num">${escapeHtml(p.expiration || "")}</span></span>
-        <span><span class="label">DTE</span><span class="num">${p.dte ?? "—"}</span></span>
-        <span><span class="label">CREDIT</span><span class="num">${credit}</span></span>
-        <span><span class="label">MAX LOSS</span><span class="num">${maxLoss}</span></span>
-        <span><span class="label">SHORT Δ</span><span class="num">${delta}</span></span>
-        ${p.sector ? `<span><span class="label">SECTOR</span>${escapeHtml(p.sector)}</span>` : ""}
-      </div>
+      ${row2Html}
       ${legsLine ? `<div class="pick-legs">${escapeHtml(legsLine)}</div>` : ""}
+      ${skewHTML}
       ${sizeHTML}
       ${p.summary_reason ? `<div class="pick-summary">${escapeHtml(p.summary_reason)}</div>` : ""}
     </div>
@@ -579,6 +636,8 @@ async function startScan() {
   setScanStatus("scanning", "starting…");
   const url = new URL("/api/scan/start", window.location.origin);
   for (const w of sel) url.searchParams.append("watchlists", w);
+  const struct = getScanStructure();
+  if (struct) url.searchParams.set("structure", struct);
   url.searchParams.set("token", TOKEN);
   try {
     const res = await fetch(url.toString(), { method: "POST" });
@@ -595,6 +654,13 @@ async function startScan() {
 }
 
 document.getElementById("scan-start-btn").addEventListener("click", startScan);
+
+// Re-poll status when the CSP toggle flips so the picks panel reflects the
+// cache for the new (account, watchlists, structure) key.
+const cspToggleEl = document.getElementById("scan-csp-toggle");
+if (cspToggleEl) {
+  cspToggleEl.addEventListener("change", () => pollScanStatus());
+}
 
 // --- Settings drawer ---
 

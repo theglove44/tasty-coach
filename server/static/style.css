@@ -121,7 +121,16 @@ td.dte-stop { color: #f85149; font-weight: 600; }
   padding: 18px 12px; text-align: center; color: #7d8590; font-size: 12px;
 }
 
-.scan-actions { display: flex; align-items: center; gap: 12px; }
+.scan-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.scan-mode {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: #c9d1d9; cursor: pointer; user-select: none;
+}
+.scan-mode input { accent-color: #1f6feb; }
+.pick-skew-warn {
+  margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+  background: #4d0d10; color: #f0a4a8; font-size: 12px;
+}
 
 .picks-panel.hidden { display: none; }
 .picks-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
