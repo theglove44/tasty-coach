@@ -149,18 +149,59 @@ ROOT = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=str(ROOT / "templates"))
 
 
+TOKEN_FILE = Path.home() / ".tasty-coach" / "web_token"
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
+
 def _resolve_token() -> str:
+    """Return a stable token across restarts.
+
+    Resolution order:
+      1. ``TASTY_COACH_WEB_TOKEN`` env var (highest precedence; lets ops pin it).
+      2. ``~/.tasty-coach/web_token`` file (auto-created on first run).
+      3. Mint a new one and write to (2).
+    """
     tok = os.environ.get("TASTY_COACH_WEB_TOKEN")
     if tok:
         return tok
+    try:
+        if TOKEN_FILE.exists():
+            tok = TOKEN_FILE.read_text().strip()
+            if tok:
+                os.environ["TASTY_COACH_WEB_TOKEN"] = tok
+                return tok
+    except OSError as e:
+        logging.getLogger(__name__).warning("could not read %s: %s", TOKEN_FILE, e)
+
     tok = secrets.token_hex(16)
-    print(f"[server] generated TASTY_COACH_WEB_TOKEN={tok}", flush=True)
-    print("[server] set TASTY_COACH_WEB_TOKEN in .env to make this stable across restarts", flush=True)
+    try:
+        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(tok)
+        TOKEN_FILE.chmod(0o600)
+        print(f"[server] minted stable web token → {TOKEN_FILE}", flush=True)
+    except OSError as e:
+        print(f"[server] could not persist web token to {TOKEN_FILE} ({e}); using in-memory only", flush=True)
     os.environ["TASTY_COACH_WEB_TOKEN"] = tok
     return tok
 
 
+def _is_loopback(request: Request) -> bool:
+    """True when the request originates from the same machine.
+
+    Solo-LAN deployment: anyone with filesystem access already has TastyTrade
+    creds in .env, so loopback bypass leaks nothing additional. LAN clients
+    (phone/iPad on `--host 0.0.0.0`) still see auth.
+    """
+    client = getattr(request, "client", None)
+    if client is None or client.host is None:
+        return False
+    return client.host in LOOPBACK_HOSTS
+
+
 def _check_token(request: Request, token: str | None) -> None:
+    if _is_loopback(request):
+        return
     expected = request.app.state.token
     supplied = token or request.headers.get("X-Auth-Token") or request.cookies.get("tcw_token")
     if supplied:
@@ -299,7 +340,16 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
                 "asset_version": request.app.state.asset_version,
             },
         )
-        response.set_cookie("tcw_token", request.app.state.token, httponly=False, samesite="strict")
+        # Persistent cookie (30 days) so the browser remembers the token
+        # across sessions. httponly=False because chat.js reads the value
+        # for SSE bootstrap.
+        response.set_cookie(
+            "tcw_token",
+            request.app.state.token,
+            max_age=COOKIE_MAX_AGE_SECONDS,
+            httponly=False,
+            samesite="strict",
+        )
         return response
 
     @app.get("/api/snapshot")
@@ -620,10 +670,11 @@ def serve(*, host: str = "127.0.0.1", port: int = 8765, account_number: str | No
 
     print()
     print("=" * 72)
-    print("  tasty-coach dashboard — open one of these URLs:")
-    print(f"    http://127.0.0.1:{port}/?token={token}")
+    print("  tasty-coach dashboard")
+    print(f"    http://127.0.0.1:{port}/                    (loopback — no token needed)")
     if host == "0.0.0.0":
         print(f"    http://{_local_ip()}:{port}/?token={token}    (LAN — phone/iPad)")
+        print(f"    Token persisted to {TOKEN_FILE} (or pin TASTY_COACH_WEB_TOKEN in .env)")
     print("=" * 72)
     print()
 
