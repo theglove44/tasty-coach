@@ -25,6 +25,8 @@ NUMERIC_KEYS: frozenset[str] = frozenset({
     "bt_csp_min_annualized_return",
     "bt_csp_skew_warn_threshold",
     "bt_csp_max_pct_nlv_per_trade",
+    "bt_chain_moneyness_min",
+    "bt_chain_moneyness_max",
 })
 OPTIONAL_NUMERIC_KEYS: frozenset[str] = frozenset({
     "theta_target",  # may be None
@@ -76,6 +78,13 @@ DEFAULTS: dict[str, Any] = {
     # = 30% of NLV per trade (per contract). Spread cap (bt_max_pct_nlv_per_trade)
     # stays at 5% for verticals.
     "bt_csp_max_pct_nlv_per_trade": 0.30,
+    # Strike pre-filter: drop chain strikes outside [min, max] × spot before
+    # the Greeks subscription. Generous default — every plausibly-tradeable
+    # strike at any reasonable IV / DTE / target-delta combination falls
+    # inside [0.40, 1.60]. Tightening shaves more time but risks dropping
+    # legitimate candidates on very high-vol underlyings.
+    "bt_chain_moneyness_min": 0.40,
+    "bt_chain_moneyness_max": 1.60,
     "alert_toggles": {
         "position_size": True,
         "bp": True,
@@ -117,6 +126,8 @@ SETTINGS_DESCRIPTIONS: dict[str, str] = {
     "bt_csp_skew_warn_threshold": "Put/call IV ratio at ~25Δ that triggers the elevated-skew warning (default 1.20).",
     "bt_csp_max_per_symbol": "Cap on CSP ideas emitted per symbol per scan (default 5; trim by premium desc).",
     "bt_csp_max_pct_nlv_per_trade": "Per-trade size cap for CSPs as fraction of NLV (assignment-to-zero max-loss / NLV). Default 0.30 = 30% — separate from the spread cap because cash-secured assignment carries the full strike.",
+    "bt_chain_moneyness_min": "Strike pre-filter floor: drop chain strikes below this fraction of spot before the Greeks subscription. Speed knob; widen if you trade very high-IV underlyings (default 0.40 keeps everything down to ~0.4× spot).",
+    "bt_chain_moneyness_max": "Strike pre-filter cap: drop chain strikes above this fraction of spot before the Greeks subscription. Speed knob; widen for very high-IV underlyings (default 1.60 keeps everything up to ~1.6× spot).",
 }
 
 CONFIG_DIR = Path.home() / ".tasty-coach"
