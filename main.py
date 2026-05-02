@@ -86,7 +86,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chat", action="store_true", help="AI coach: interactive chat REPL")
     parser.add_argument("--serve", action="store_true", help="Run the web dashboard (FastAPI + chat sidebar)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Bind host for --serve (default 127.0.0.1; use 0.0.0.0 for LAN access)")
-    parser.add_argument("--port", type=int, default=8765, help="Bind port for --serve (default 8765)")
+    parser.add_argument("--port", type=int, default=8766, help="Bind port for --serve (default 8766)")
     parser.add_argument("--top", type=_nonneg_int, default=3, help="Number of top ideas to surface (use with --best-trades, default: 3)")
     parser.add_argument("--bt-watchlist", action="append", dest="bt_watchlist", metavar="NAME", help="Watchlist to include in --best-trades (repeatable; defaults: Chris Historical Trades, High Options Volume)")
     parser.add_argument("--force", action="store_true", help="Override Risk Manager blocks")

@@ -651,7 +651,7 @@ def create_app(*, account_number: str | None = None) -> FastAPI:
     return app
 
 
-def serve(*, host: str = "127.0.0.1", port: int = 8765, account_number: str | None = None) -> None:
+def serve(*, host: str = "127.0.0.1", port: int = 8766, account_number: str | None = None) -> None:
     import socket
     import uvicorn
 
