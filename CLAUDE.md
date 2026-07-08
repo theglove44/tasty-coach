@@ -1,31 +1,36 @@
 # CLAUDE.md — Tasty-Coach Agent Instructions
 
-## Development
+## Global Memory
 
-### Run tests
-```
-venv/bin/python -m unittest discover tests
-```
-~590 tests across `tests/`, runs in ~5-6s. Run this after any change to `agents/*.py` or
-`utils/*.py` before considering a task done (a `PostToolUse` hook also runs it automatically —
-see `.claude/settings.local.json`).
+Read ~/.claude/CLAUDE.md for memory rules and topic files.
 
-### Run the app
-```
-./venv/bin/python main.py --test-connection    # verify API connectivity
-./venv/bin/python main.py --best-trades        # rank best trade ideas across watchlists
-./venv/bin/python main.py --serve              # run the web dashboard (FastAPI + chat sidebar), http://127.0.0.1:8766
-./venv/bin/python main.py --help               # full flag reference
-```
-Other common flags: `--dashboard --html` (market quality dashboard, no account needed),
-`--menu` (interactive command menu), `--coach` / `--chat` (AI coach briefing/REPL),
-`--review-position SYMBOL` (roll scenarios), `--home` (unified account dashboard).
+## What This Project Is
 
-### Branch → PR → merge
-- Create a feature branch per task: `git checkout -b <topic>`
-- Commit as you go with focused messages
-- Open a PR with `gh pr create`; merge with `gh pr merge` once checks/tests pass
-- `gh pr view` to check status/comments before merging
+Tasty-coach is a Python 3.10+ options-trading assistant for a single Tastytrade
+account. It scans watchlists for high-IVR opportunities, screens vertical/iron
+condor strategy candidates, tracks positions and risk, calculates roll
+scenarios, computes gamma exposure (GEX), and now includes an AI coach
+(`claude-agent-sdk`) plus a local FastAPI web dashboard. It does not place
+live orders itself — see Trading Safety Rules below.
+
+Stack: `tastytrade` SDK **11.1.0** (pinned in `requirements.txt`; installed
+version confirmed 11.1.0 — if you see a memory note claiming "SDK v12+",
+that is stale/incorrect), `python-dotenv`, `pandas`, `rich`,
+`claude-agent-sdk`, `fastapi` + `uvicorn` + `jinja2` + `sse-starlette` for the
+dashboard.
+
+## Relationship to AGENTS.md
+
+- **AGENTS.md** is the terse, mechanical reference: build/test commands,
+  mandatory skill triggers (`$trade-verification`, `$position-check`,
+  `$backtest-runner`, `$log-analyzer`), and compatibility rules. Keep it in
+  sync with this file when commands or safety rules change — AGENTS.md
+  should never contradict this file.
+- **CLAUDE.md** (this file) is the fuller picture: workflow philosophy, the
+  full file/agent inventory, and the trading safety rules that both files
+  must agree on.
+- If the two ever drift, this file wins for safety rules; AGENTS.md wins for
+  exact skill-trigger syntax.
 
 ## Workflow
 
@@ -39,7 +44,7 @@ Other common flags: `--dashboard --html` (market quality dashboard, no account n
 - Keep main context clean for trading logic
 
 ### Self-Improvement Loop
-- After any mistake or bug: update `MEMORY.md` (auto-memory) with the pattern
+- After any mistake or bug: update project memory (`~/.claude/projects/<mapped-path>/memory/MEMORY.md`) with the pattern
 - Document what went wrong and how to prevent it
 - Review relevant lessons before major work
 
@@ -66,45 +71,131 @@ Other common flags: `--dashboard --html` (market quality dashboard, no account n
 - **Test Before Deploy**: Paper trade first
 - **Log Everything**: Record trade decisions and outcomes
 
-## Trading-Specific Rules
+## Trading-Specific Rules (Safety-Critical — do not remove or weaken)
 
-- Never execute real trades without explicit user approval
+- Never execute real trades without explicit user approval — this codebase
+  has no order-placement path today; if one is ever added, it must default
+  to confirmation-required
 - Document strategy changes in memory
 - Review P/L after each session
 - Respect PDT rule (max 3 day trades per 5 days for sub-$25k accounts)
+- `agents/manager.py` RiskManager blocks execution when BP usage > 50%;
+  only override with `--force` deliberately, not by default
+- Credentials (Tastytrade OAuth client secret/refresh token, and any
+  Anthropic/Claude OAuth token) live in `.env` — never read, print, commit,
+  or paste its contents; refer to variables by name only
+
+## Build, Test, Run (verified against the live repo)
+
+```bash
+# Activate environment
+source venv/bin/activate
+
+# Run the full test suite (556 tests collected as of this writing)
+python -m pytest tests/
+
+# Interactive launcher / menu
+python main.py --menu
+
+# Scan a watchlist for high-IVR candidates + strategy screening
+python main.py --watchlist "My Watchlist"
+python main.py --watchlist "My Watchlist" --force   # override RiskManager BP block
+
+# On-demand single-symbol options research (bypasses IVR gate)
+python main.py --research SYMBOL --format json
+
+# Best trade ideas across watchlists
+python main.py --best-trades --top 3
+
+# AI coach (one-shot briefing or interactive chat)
+python main.py --coach
+python main.py --chat
+
+# Web dashboard (FastAPI + chat sidebar)
+python main.py --serve --host 127.0.0.1 --port 8766
+
+# Debug logging
+python main.py --debug --watchlist "Test Watchlist"
+
+# Position monitor (standalone alerting daemon)
+python position_monitor.py
+```
+
+Notes on the above:
+- There is **no `--dry-run` flag** in `main.py`'s argument parser. An older
+  doc referenced `--watchlist ... --dry-run`; that flag does not exist —
+  don't use or re-document it. `--force` (override RiskManager blocks) is
+  the closest real flag of that shape.
+- `python -m pytest tests/` was confirmed to structurally collect (556
+  tests) with no `pytest.ini`/`pyproject.toml` needed — plain pytest
+  discovery in `tests/`.
+- Full CLI surface is large (`--history`, `--transactions`, `--orders`,
+  `--sync`, `--trades`, `--performance*`, `--pl-*`, `--equity-curve`,
+  `--review-position`, `--timeline`, `--dashboard`, `--alerts`, `--account`,
+  etc.) — run `python main.py --menu` or read `setup_argument_parser()` in
+  `main.py` for the authoritative, current list rather than trusting any
+  doc snapshot, including this one.
 
 ## Key Files
 
-- `main.py` — Entry point, CLI args
-- `agents/scanner.py` — IVR scanning, watchlist resolution
-- `agents/portfolio.py` — Position tracking
-- `agents/reviewer.py` — Position review and roll suggestions
-- `agents/strategy.py` — Strategy screening and entry logic
-- `agents/manager.py` — Risk management (BP usage, position sizing)
-- `agents/gex.py` — Gamma exposure analysis
-- `agents/dashboard.py` — Market Quality Dashboard ("Should I Be Trading?")
-- `agents/dashboard_html.py` — HTML rendering for the dashboard
-- `agents/analytics.py` — Trading performance analytics (P/L, equity curve)
-- `agents/history.py` — Account history / transaction review
-- `agents/trade_ranker.py` — `--best-trades` / `--put-selector` ranking logic
-- `agents/options_researcher.py` — `--research` options chain analysis
-- `agents/advisor.py`, `agents/coach.py`, `agents/coach_context.py`, `agents/coach_tools.py` — AI coach (`--coach`/`--chat`)
-- `agents/timeline.py`, `agents/alerts.py` — event timeline and persisted alerts
-- `server/app.py` — FastAPI app backing `--serve` (web dashboard + chat sidebar)
-- `utils/tasty_client.py` — OAuth authentication and session management
-- `utils/roll_calculator.py` — Roll scenario calculations
-- `utils/market_schedule.py` — Market session timing
-- `utils/dx_feed.py` — Real-time data streaming (dxLink)
-- `utils/db.py` — Local SQLite persistence (trade history sync)
-- `utils/trade_grouper.py` — Groups raw transactions into trade lifecycles
-- `utils/launcher_ui.py` — Interactive `--menu` command launcher
-- `utils/dashboard_ui.py`, `utils/timeline_ui.py` — Rich-based terminal rendering
-- `utils/settings.py` — User-configurable defaults (best-trades thresholds, etc.)
-- `utils/redact.py` — Screenshot-safe output redaction
-- `position_monitor.py` — Automated position monitoring and alerts
+### Entry points
+- `main.py` — CLI orchestrator; all flags defined in `setup_argument_parser()`
+- `position_monitor.py` / `position_monitor.sh` — standalone position alerting daemon (runs during market hours, alerts via Telegram)
+
+### `agents/` — one class per concern (17 modules)
+- `scanner.py` — watchlist resolution & IVR filtering
+- `portfolio.py` — position tracking & reporting (async `init()`)
+- `strategy.py` — vertical/iron-condor screening & entry logic
+- `manager.py` — RiskManager: BP usage, NLV, day-trade excess, portfolio delta/theta; blocks execution above 50% BP usage (async `init()`)
+- `gex.py` — Gamma Exposure (GEX): call/put walls, zero-gamma level, GEX_REVERSION_THRESHOLD signals
+- `reviewer.py` — position review & roll-scenario generation
+- `advisor.py` — per-position action advisor
+- `alerts.py` — alert collection & filtering for risk management
+- `analytics.py` — performance metrics & equity curve from local trade history
+- `history.py` — account history: performance reporting, transaction/order management
+- `timeline.py` — event classification & roll annotation for the position timeline
+- `options_researcher.py` — on-demand symbol research (bypasses IVR gate); powers `--research` and `--best-trades`
+- `trade_ranker.py` — watchlist-wide trade ranking orchestrator; powers `--best-trades`
+- `dashboard.py` — "Should I Be Trading Today?" market-quality scoring (5 pillars: Volatility, Trend, Breadth, Momentum, Macro)
+- `dashboard_html.py` — HTML renderer for the Market Quality Dashboard (standalone dark-themed export, distinct from `server/`)
+- `coach.py` — AI coach: Claude Agent SDK driving tasty-coach as in-process tools; one-shot briefing (`--coach`) and REPL (`--chat`)
+- `coach_context.py` — shared runtime context for the AI coach (live session, resolved account, journal path)
+- `coach_tools.py` — tool wrappers exposing existing tasty-coach agents to the Claude Agent SDK
+- `agents/prompts/` — prompt templates used by the coach agents
+
+### `utils/` — infrastructure
+- `tasty_client.py` — OAuth authentication & session management (reads Tastytrade credentials from `.env`)
+- `roll_calculator.py` — pure roll-scenario calculations (down/out/down-and-out), no API calls
+- `market_schedule.py` — market session timing
+- `dx_feed.py` — real-time data streaming (dxLink/DXLinkStreamer)
+- `db.py` — local trade-history database
+- `journal.py` — trade journal (recommendations persisted via `--journal`)
+- `trade_grouper.py` — groups raw transactions into logical trades
+- `alert_store.py` — persisted alert storage backing `--alerts`
+- `settings.py` — runtime-tunable settings (exposed via dashboard `/api/settings`)
+- `launcher_ui.py`, `dashboard_ui.py`, `timeline_ui.py` — terminal UI rendering for `--menu`, `--dashboard`, `--timeline`
+- `correlation_buckets.py`, `sector_map.py` — exposure/correlation grouping for risk checks
+- `redact.py` — log/output redaction helper
+
+### `server/` — FastAPI web dashboard
+- `server/app.py` — FastAPI app (`create_app()`); routes include `/`, `/api/snapshot`, `/api/watchlists`, `/api/scan/start`+`/api/scan/status` (best-trades scan), `/api/briefing` (SSE), `/api/chat`+`/api/chat/reset` (SSE), `/api/settings`(+`/reset`), `/api/journal`; token-gated except for loopback requests; started via `python main.py --serve`
+- `server/snapshot.py` — snapshot data assembly for the dashboard
+- `server/templates/dashboard.html` — Jinja2 template for the dashboard shell
+- `server/static/chat.js` — frontend chat/SSE client for the coach sidebar
+- `server/static/style.css` — dashboard styling
+
+### `.agents/skills/` — mandatory skills referenced from AGENTS.md
+- `trade-verification/` (with `scripts/verify.sh`), `position-check/`, `backtest-runner/`, `log-analyzer/` — see AGENTS.md for when each is required
+
+### Tests
+- `tests/` — pytest suite, plain discovery (no `pytest.ini`/`pyproject.toml`), run with `python -m pytest tests/`
 
 ## Memory
 
-- Update `MEMORY.md` (auto-memory, persists across conversations)
-- Document API quirks, rate limits, session issues
-- Track strategy performance metrics
+- Project memory lives outside the repo at
+  `~/.claude/projects/-Users-office-Projects-tasty-coach/memory/MEMORY.md`
+  (and `project_best_trades.md` for the Best-Trades initiative) — treat it
+  as more current than this file for API quirks, thresholds, and constants,
+  and pull anything durable forward into this file when you touch it.
+- Document API quirks, rate limits, session issues there
+- Track strategy performance metrics there

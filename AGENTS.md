@@ -1,17 +1,31 @@
 # AGENTS.md — tasty-coach
 
+This is the terse, mechanical reference (build/test commands, mandatory
+skill triggers, compatibility rules). For the full picture — workflow
+philosophy, the complete `agents/`/`utils/`/`server/` inventory, and the
+authoritative trading safety rules — see `CLAUDE.md` in this same directory.
+If this file and CLAUDE.md ever disagree, CLAUDE.md's safety rules win.
+
 ## Project Overview
 
-Tasty-coach automates Antivestor trading strategies on tastytrade. It scans for opportunities, manages positions, and monitors trades.
+Tasty-coach is a Python assistant for a single Tastytrade account. It scans
+watchlists for opportunities, screens strategies, manages/monitors
+positions, and (as of the AI-coach + dashboard additions) offers a
+Claude-Agent-SDK coach and a local FastAPI web dashboard. See CLAUDE.md for
+the current 17-file `agents/` inventory and the `server/` dashboard layout.
 
 **Core Code:**
-- `main.py` — Entry point, CLI args
-- `agents/` — Strategy components (scanner, portfolio, reviewer, strategy, manager, gex)
-- `utils/` — Infrastructure (tasty_client, dx_feed, market_schedule, roll_calculator)
+- `main.py` — Entry point, CLI args (run `python main.py --menu` or read
+  `setup_argument_parser()` for the current, authoritative flag list)
+- `agents/` — Strategy + coach components (scanner, portfolio, reviewer,
+  strategy, manager, gex, coach, options_researcher, trade_ranker, etc. —
+  see CLAUDE.md for the full list)
+- `utils/` — Infrastructure (tasty_client, dx_feed, market_schedule, roll_calculator, settings, db, journal, ...)
+- `server/` — FastAPI web dashboard (`app.py`, `templates/`, `static/chat.js`)
 - `position_monitor.py` — Automated position monitoring
 
 **Config:**
-- `.env` — API credentials (never commit)
+- `.env` — Tastytrade OAuth credentials and Claude OAuth token (never commit, never read/print contents)
 - Cron jobs manage start/stop
 
 ## Mandatory Skill Usage
@@ -30,8 +44,8 @@ source venv/bin/activate
 # Run tests
 python -m pytest tests/
 
-# Run scanner (dry run)
-python main.py --watchlist "My Watchlist" --dry-run
+# Run scanner
+python main.py --watchlist "My Watchlist"
 
 # Run with debug logging
 python main.py --debug --watchlist "Test Watchlist"
@@ -39,6 +53,11 @@ python main.py --debug --watchlist "Test Watchlist"
 # Check positions
 python position_monitor.py
 ```
+
+Note: there is no `--dry-run` flag in `main.py` — an earlier version of this
+doc referenced one that never existed in the argument parser. Use `--force`
+to override RiskManager BP-usage blocks when you explicitly mean to; there
+is no separate simulate-only mode for the scanner today.
 
 ## Trading Rules (Critical)
 
