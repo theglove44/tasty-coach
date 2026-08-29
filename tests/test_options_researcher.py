@@ -530,7 +530,16 @@ class TestOptionsResearcherAgent(unittest.IsolatedAsyncioTestCase):
     async def test_research_bypasses_ivr_gate(self):
         """Test research returns ideas even when IVR would be below the 25% gate"""
         today = date.today()
-        exp = today + timedelta(days=45)
+        # Auto-resolve only accepts standard monthlies (3rd Friday, DTE 25–75).
+        exp = min(
+            (
+                today + timedelta(days=dte)
+                for dte in range(25, 76)
+                if (today + timedelta(days=dte)).weekday() == 4
+                and 15 <= (today + timedelta(days=dte)).day <= 21
+            ),
+            key=lambda d: abs((d - today).days - 45),
+        )
 
         put_opt = MagicMock()
         put_opt.streamer_symbol = 'AAPL__P100'
