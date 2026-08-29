@@ -129,11 +129,6 @@ MARKET_DATA_BATCH_SIZE = 20
 MARKET_DATA_MAX_URL_CHARS = 400
 MAX_IDEAS_RETURNED = 20
 
-# Cash-secured-put screener defaults (income-focused; lower delta than wheel).
-CSP_DELTA_MIN = 0.15
-CSP_DELTA_MAX = 0.30
-CSP_MIN_OTM_PCT = 0.03
-CSP_MAX_PER_SYMBOL = 5
 # Reference target delta when picking comparable put/call legs for skew.
 SKEW_REFERENCE_DELTA = 0.25
 
@@ -216,8 +211,8 @@ class OptionsResearcherAgent:
         Args:
             symbol: Underlying symbol (e.g., 'AAPL')
             expiration: Optional target expiration date
-            underlying_price: Spot price for CSP screening; when omitted,
-                cash-secured-put ideas are skipped (callers without a watchlist
+            underlying_price: Spot price reference; when omitted,
+                price-relative filters are skipped (callers without a watchlist
                 scan can't compute pct_otm). Spread/iron-condor emission is
                 unaffected.
 
@@ -379,27 +374,6 @@ class OptionsResearcherAgent:
             if ic_idea:
                 ideas_list.append(ic_idea)
 
-        # Build Cash-Secured Puts (one per qualifying strike).
-        # Requires a spot reference to compute pct_otm; skipped if missing.
-        if underlying_price is not None and underlying_price > 0:
-            # Pull CSP settings if available; fall back to module-level defaults.
-            try:
-                from utils.settings import settings as _settings
-                csp_delta_min = _settings.get("bt_csp_delta_min")
-                csp_delta_max = _settings.get("bt_csp_delta_max")
-                csp_min_otm = _settings.get("bt_csp_min_otm_pct")
-                csp_cap = _settings.get("bt_csp_max_per_symbol")
-            except Exception:
-                csp_delta_min = csp_delta_max = csp_min_otm = csp_cap = None
-            csp_ideas = self._build_cash_secured_puts(
-                put_rows, symbol, expiration_date, dte, underlying_price,
-                delta_min=csp_delta_min,
-                delta_max=csp_delta_max,
-                min_otm_pct=csp_min_otm,
-                max_per_symbol=csp_cap,
-            )
-            ideas_list.extend(csp_ideas)
-
         # Compute put/call skew at the screened expiration; surfaced on the
         # report so callers (trade_ranker) can attach it to SymbolContext.
         put_call_skew = _compute_put_call_skew(rows)
@@ -484,7 +458,7 @@ class OptionsResearcherAgent:
         * moneyness_max]`` BEFORE the (slow) market-data + Greeks fetch. This
         cuts the Greeks websocket payload 2–5× on typical chains without
         affecting candidate quality — strikes outside the window have effective
-        deltas near 0 or 1 and are never picked by the spread/CSP builders.
+        deltas near 0 or 1 and are never picked by the spread builders.
 
         Args:
             options: List of option objects from chain
@@ -977,109 +951,6 @@ class OptionsResearcherAgent:
             score_breakdown=score_breakdown,
             legs=put_idea.legs + call_idea.legs,
         )
-
-    def _build_cash_secured_puts(
-        self,
-        rows: List[StrikeRow],
-        symbol: str,
-        expiration: date,
-        dte: int,
-        underlying_price: float,
-        *,
-        delta_min: Optional[float] = None,
-        delta_max: Optional[float] = None,
-        min_otm_pct: Optional[float] = None,
-        max_per_symbol: Optional[int] = None,
-    ) -> List[TradeIdea]:
-        """
-        Emit one TradeIdea per qualifying OTM PUT strike for the cash-secured-put
-        screener. Filters by abs(delta) in [CSP_DELTA_MIN, CSP_DELTA_MAX] and
-        pct_otm >= CSP_MIN_OTM_PCT. trade_ranker scores each independently so
-        we don't pre-rank here; we just trim to CSP_MAX_PER_SYMBOL by mid desc
-        to avoid candidate bloat.
-
-        Sets:
-            width = strike (so credit_pct_of_width = credit/strike, the
-                "yield on capital" metric).
-            max_loss = strike - credit (per share, in points; conservative
-                assignment-to-zero bound — multiply by 100 for dollars in
-                trade_ranker._dollar_max_loss).
-            credit = mid (per share, in points).
-            score = 0.0; trade_ranker._score_csp_candidate fills it in.
-        """
-        if underlying_price <= 0:
-            return []
-
-        d_min = delta_min if delta_min is not None else CSP_DELTA_MIN
-        d_max = delta_max if delta_max is not None else CSP_DELTA_MAX
-        otm_floor = min_otm_pct if min_otm_pct is not None else CSP_MIN_OTM_PCT
-        cap = max_per_symbol if max_per_symbol is not None else CSP_MAX_PER_SYMBOL
-
-        ideas: List[TradeIdea] = []
-        for r in rows:
-            if r.option_type != "PUT":
-                continue
-            if r.delta is None or r.mid is None or r.mid <= 0:
-                continue
-            abs_delta = abs(r.delta)
-            if not (d_min <= abs_delta <= d_max):
-                continue
-            if r.strike >= underlying_price:
-                continue  # ITM — not a CSP entry
-            pct_otm = (underlying_price - r.strike) / underlying_price
-            if pct_otm < otm_floor:
-                continue
-
-            credit = float(r.mid)
-            strike = float(r.strike)
-            max_loss = strike - credit  # per share, in points
-            credit_pct_of_strike = credit / strike if strike > 0 else 0.0
-            pop = 1.0 - abs_delta
-
-            ideas.append(TradeIdea(
-                strategy="CASH_SECURED_PUT",
-                symbol=symbol,
-                expiration=expiration,
-                dte=dte,
-                short_strike=strike,
-                long_strike=0.0,
-                width=strike,
-                credit=credit,
-                max_loss=max_loss,
-                credit_pct_of_width=credit_pct_of_strike,
-                short_delta=float(r.delta),
-                net_delta=-float(r.delta),
-                net_gamma=-(float(r.gamma) if r.gamma is not None else 0.0),
-                net_theta=-(float(r.theta) if r.theta is not None else 0.0),
-                net_vega=-(float(r.vega) if r.vega is not None else 0.0),
-                breakeven=[strike - credit],
-                pop_estimate=pop,
-                score=0.0,
-                score_breakdown={},
-                legs=[
-                    {
-                        "action": "SELL",
-                        "option_type": "PUT",
-                        "strike": strike,
-                        "occ_symbol": r.occ_symbol,
-                        "streamer_symbol": r.streamer_symbol,
-                        "bid": float(r.bid) if r.bid is not None else None,
-                        "ask": float(r.ask) if r.ask is not None else None,
-                        "mid": credit,
-                        "volume": int(r.volume) if r.volume is not None else None,
-                        "open_interest": int(r.open_interest) if r.open_interest is not None else None,
-                        "delta": float(r.delta),
-                        "gamma": float(r.gamma) if r.gamma is not None else None,
-                        "theta": float(r.theta) if r.theta is not None else None,
-                        "vega": float(r.vega) if r.vega is not None else None,
-                        "iv": float(r.iv) if r.iv is not None else None,
-                    },
-                ],
-            ))
-
-        # Trim to top-N by premium so we don't flood the ranker.
-        ideas.sort(key=lambda i: i.credit, reverse=True)
-        return ideas[:cap]
 
     def _score_idea(self, idea_draft: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
         """

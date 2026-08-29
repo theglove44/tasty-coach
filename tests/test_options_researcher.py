@@ -90,7 +90,7 @@ class TestOptionsResearcherAgent(unittest.IsolatedAsyncioTestCase):
         if resolved:
             dte = (resolved - today).days
             self.assertTrue(DTE_FALLBACK_MIN <= dte <= DTE_FALLBACK_MAX)
-            self.assertIn(mode, ['MONTHLY_45DTE', 'NEAREST_IN_WINDOW', 'NONE'])
+            self.assertIn(mode, ['MONTHLY', 'MONTHLY_45DTE', 'NEAREST_IN_WINDOW', 'NONE'])
 
     async def test_resolve_expiration_no_viable(self):
         """Test _resolve_expiration with no viable dates"""
@@ -156,7 +156,10 @@ class TestOptionsResearcherAgent(unittest.IsolatedAsyncioTestCase):
         greek2.vega = Decimal('0.11')
         greek2.volatility = Decimal('0.26')
 
-        with patch('agents.options_researcher.get_market_data_by_type', return_value=[md1, md2]):
+        with patch.object(self.agent, '_fetch_market_data_batched', new=AsyncMock(return_value={
+            'AAPL 250516C00100000': md1,
+            'AAPL 250516C00110000': md2,
+        })):
             with patch.object(self.agent, '_fetch_greeks', return_value={
                 'AAPL__C100': greek1,
                 'AAPL__C110': greek2,
@@ -489,7 +492,9 @@ class TestOptionsResearcherAgent(unittest.IsolatedAsyncioTestCase):
         chain = {exp: [opt]}
 
         with patch('agents.options_researcher.get_option_chain', return_value=chain):
-            with patch('agents.options_researcher.get_market_data_by_type', return_value=[md]):
+            with patch.object(self.agent, '_fetch_market_data_batched', new=AsyncMock(return_value={
+                'AAPL 250516C00100000': md,
+            })):
                 with patch('agents.options_researcher.get_market_metrics', return_value=[MagicMock(
                     implied_volatility_index_rank=Decimal('0.425'),
                     implied_volatility_index=Decimal('0.285'),
@@ -577,7 +582,10 @@ class TestOptionsResearcherAgent(unittest.IsolatedAsyncioTestCase):
         low_ivr_metric.implied_volatility_index = Decimal('0.15')
 
         with patch('agents.options_researcher.get_option_chain', return_value=chain):
-            with patch('agents.options_researcher.get_market_data_by_type', return_value=[md_short, md_long]):
+            with patch.object(self.agent, '_fetch_market_data_batched', new=AsyncMock(return_value={
+                'AAPL 250516P00100000': md_short,
+                'AAPL 250516P00095000': md_long,
+            })):
                 with patch('agents.options_researcher.get_market_metrics', return_value=[low_ivr_metric]):
                     with patch.object(self.agent, '_fetch_greeks', return_value={
                         'AAPL__P100': greek_short,

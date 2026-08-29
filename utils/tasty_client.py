@@ -7,6 +7,7 @@ from typing import Optional, List
 from dotenv import load_dotenv
 from tastytrade import Session, Account
 from tastytrade.utils import now_in_new_york
+from utils.private_paths import RUNTIME_LOGS_DIR
 
 load_dotenv()
 
@@ -57,12 +58,13 @@ class Config:
 
     def _setup_logging(self) -> None:
         log_level = getattr(logging, self.log_level.upper(), logging.INFO)
+        RUNTIME_LOGS_DIR.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
             level=log_level,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             handlers=[
                 logging.StreamHandler(),
-                logging.FileHandler("tasty_auto.log"),
+                logging.FileHandler(RUNTIME_LOGS_DIR / "tasty_auto.log"),
             ],
         )
         if log_level > logging.DEBUG:

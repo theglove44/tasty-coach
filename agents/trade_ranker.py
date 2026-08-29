@@ -55,7 +55,7 @@ class SymbolContext:
     liquidity_rank: Optional[float] = None
     next_earnings_date: Optional[date] = None
     # Put/call IV ratio at ~25Δ; populated post-research, drives the
-    # "elevated downside fear" warning surfaced by the put-selector.
+    # "elevated downside fear" warning from put skew.
     put_call_skew: Optional[float] = None
 
 
@@ -143,8 +143,6 @@ async def generate_candidates(
     `concurrency` caps simultaneous research calls (default 1 = sequential).
     `timeout_seconds` applies a per-symbol hard cap; on timeout the symbol becomes a
     research_timeout rejection instead of blocking the run.
-    `structure_filter` (e.g. "CASH_SECURED_PUT") restricts emitted candidates to
-    one structure type; ``None`` admits all structures the researcher emits.
     """
     candidates: list[Candidate] = []
     rejections: list[Rejection] = []
@@ -170,16 +168,6 @@ async def generate_candidates(
             underlying_price = (
                 float(ctx.current_price) if ctx.current_price is not None else None
             )
-            # CSP screening requires a spot reference; without it the
-            # researcher can't compute pct_otm and emits no CSP ideas. If the
-            # caller is filtering for CSPs, surface this as a rejection rather
-            # than letting the symbol disappear silently.
-            if structure_filter == "CASH_SECURED_PUT" and underlying_price is None:
-                return ctx, None, Rejection(
-                    symbol=ctx.symbol,
-                    reason="no_spot_for_csp",
-                    detail="underlying spot unavailable; cannot compute pct_otm",
-                )
             try:
                 if timeout_seconds is not None:
                     report = await asyncio.wait_for(
@@ -354,10 +342,6 @@ def _load_thresholds() -> dict[str, Any]:
         "research_timeout_seconds": settings.get("bt_research_timeout_seconds"),
         "per_trade_risk_pct": settings.get("bt_per_trade_risk_pct"),
         "per_trade_risk_dollars": settings.get("bt_per_trade_risk_dollars"),
-        "csp_min_otm_pct": settings.get("bt_csp_min_otm_pct"),
-        "csp_min_annualized_return": settings.get("bt_csp_min_annualized_return"),
-        "csp_skew_warn_threshold": settings.get("bt_csp_skew_warn_threshold"),
-        "csp_max_pct_nlv_per_trade": settings.get("bt_csp_max_pct_nlv_per_trade"),
     }
 
 
@@ -439,22 +423,6 @@ def _candidate_to_dict(
         "legs": [dict(leg) for leg in (c.legs or [])],
         "sector": get_sector(c.symbol),
     }
-
-    # CSP-specific metrics (article's "balanced" dimensions made visible).
-    if c.structure == "CASH_SECURED_PUT":
-        strike = _csp_short_strike(c)
-        if strike > 0:
-            payload["cash_required"] = strike * 100.0
-            if c.dte > 0:
-                payload["annualized_return"] = (c.credit * 365.0 / c.dte) / strike
-                payload["premium_per_day"] = c.credit / c.dte
-            spot = c.context.current_price
-            if spot is not None and float(spot) > 0:
-                payload["pct_otm"] = (float(spot) - strike) / float(spot)
-                payload["spot_price"] = float(spot)
-        skew = c.context.put_call_skew
-        if skew is not None:
-            payload["put_call_skew"] = float(skew)
 
     if account_state and account_state.nlv > 0 and c.max_loss > 0:
         dollar_risk = _dollar_max_loss(c)
@@ -587,8 +555,6 @@ async def run_best_trades(
 ) -> dict[str, Any]:
     """Run the full Best-Trades pipeline and return a canonical result dict.
 
-    ``structure_filter`` (e.g. "CASH_SECURED_PUT") restricts emitted candidates
-    to one structure type. None admits all structures.
     """
     resolved_watchlists = list(watchlists) if watchlists is not None else list(DEFAULT_WATCHLISTS)
     result: dict[str, Any] = {
@@ -670,7 +636,6 @@ async def run_best_trades(
             max_pct_nlv_per_trade=thresholds["max_pct_nlv_per_trade"],
             bp_cap_for_new=thresholds["bp_cap_for_new"],
             concentration_block_pct=thresholds["concentration_block_pct"],
-            csp_max_pct_nlv_per_trade=thresholds.get("csp_max_pct_nlv_per_trade"),
         )
         for r in account_rejections:
             result["rejected"].append(_rejection_to_dict(r))
@@ -679,13 +644,7 @@ async def run_best_trades(
         if not passing:
             return result
 
-    scored = score_candidates(
-        passing,
-        today=today,
-        account_state=account_state,
-        csp_min_otm_pct=thresholds.get("csp_min_otm_pct"),
-        csp_min_annualized_return=thresholds.get("csp_min_annualized_return"),
-    )
+    scored = score_candidates(passing, today=today, account_state=account_state)
     selected = _select_top_per_symbol(scored, top)
     result["top"] = [
         _candidate_to_dict(
@@ -696,7 +655,6 @@ async def run_best_trades(
         )
         for c in selected
     ]
-    result["csp_skew_warn_threshold"] = thresholds.get("csp_skew_warn_threshold")
     logger.info("done: %d top trades selected from %d scored candidates", len(result["top"]), len(scored))
     return result
 
@@ -719,7 +677,6 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
     if not top_items:
         print("No trades passed all gates today.")
     else:
-        skew_warn_threshold = result.get("csp_skew_warn_threshold", 1.20)
         for idx, item in enumerate(top_items, start=1):
             symbol = item.get("symbol", "?")
             structure = item.get("structure", "?")
@@ -735,32 +692,10 @@ def _print_best_trades_text(result: dict[str, Any], top: int) -> None:
             jid_tag = f"  [journal #{jid}]" if jid else ""
 
             print(f"[{idx}] {symbol} {structure} {expiration} ({dte} DTE){jid_tag}")
-            # Skew warning printed under the symbol line for CSPs so the
-            # association is unambiguous when scrolling.
-            skew = item.get("put_call_skew")
-            if structure == "CASH_SECURED_PUT" and skew is not None and skew >= skew_warn_threshold:
-                print(f"    ⚠ put/call skew {skew:.2f} — elevated downside fear; consider smaller size or vertical")
             legs_line = _format_legs_from_dicts(item.get("legs") or [])
             if legs_line:
                 print(f"    Legs: {legs_line}")
-
-            if structure == "CASH_SECURED_PUT":
-                cash_required = item.get("cash_required")
-                annualized = item.get("annualized_return")
-                premium_per_day = item.get("premium_per_day")
-                pct_otm = item.get("pct_otm")
-                pop = item.get("pop_estimate")
-                ann_str = f" / Annualized {annualized * 100:.1f}%" if annualized is not None else ""
-                cash_str = f" / Cash required ${cash_required:,.0f}" if cash_required is not None else ""
-                print(f"    Credit ${credit * 100:.0f}{cash_str}{ann_str}")
-                buf = f"Buffer {pct_otm * 100:.1f}% OTM" if pct_otm is not None else ""
-                pop_str = f"POP {pop * 100:.0f}%" if pop is not None else ""
-                ppd = f"Premium/day ${premium_per_day * 100:.2f}" if premium_per_day is not None else ""
-                line2 = " · ".join([s for s in (buf, pop_str, ppd) if s])
-                if line2:
-                    print(f"    {line2}")
-            else:
-                print(f"    Credit ${credit * 100:.0f} / Max risk ${max_loss_dollars:.0f} per contract")
+            print(f"    Credit ${credit * 100:.0f} / Max risk ${max_loss_dollars:.0f} per contract")
 
             recommended = item.get("recommended_contracts")
             pct_at_risk = item.get("pct_nlv_at_risk")
@@ -961,15 +896,8 @@ def apply_account_filters(
     max_pct_nlv_per_trade: float,
     bp_cap_for_new: float,
     concentration_block_pct: float,
-    csp_max_pct_nlv_per_trade: Optional[float] = None,
 ) -> tuple[list[Candidate], list[Rejection]]:
-    """Hard-reject candidates that worsen account state beyond configured caps.
-
-    CSPs use a separate (more permissive) per-trade size cap because their
-    assignment-to-zero max-loss is the full strike — applying the spread cap
-    of 5% NLV would reject every CSP on small accounts. Pass
-    ``csp_max_pct_nlv_per_trade`` (typically 0.30) to gate CSPs separately.
-    """
+    """Hard-reject candidates that worsen account state beyond configured caps."""
     survivors: list[Candidate] = []
     rejections: list[Rejection] = []
 
@@ -989,22 +917,15 @@ def apply_account_filters(
     for c in candidates:
         dollar_risk = _dollar_max_loss(c)
         size_pct = dollar_risk / nlv
-        # CSPs get their own (more permissive) cap — the spread cap is meant
-        # for vertical max-loss, not assignment-to-zero capital risk.
-        cap_for_this = (
-            csp_max_pct_nlv_per_trade
-            if c.structure == "CASH_SECURED_PUT" and csp_max_pct_nlv_per_trade is not None
-            else max_pct_nlv_per_trade
-        )
 
-        if size_pct > cap_for_this:
+        if size_pct > max_pct_nlv_per_trade:
             rejections.append(Rejection(
                 symbol=c.symbol,
                 reason="oversized_vs_nlv",
                 detail=(
                     f"max_loss ${dollar_risk:.0f} = "
                     f"{size_pct * 100:.1f}% NLV above cap "
-                    f"{cap_for_this * 100:.1f}%"
+                    f"{max_pct_nlv_per_trade * 100:.1f}%"
                 ),
             ))
             continue
@@ -1066,17 +987,6 @@ _WEIGHT_VOLATILITY_EDGE: float = 25.0
 _WEIGHT_EVENT_RISK: float = 10.0
 _WEIGHT_STRUCTURE_QUALITY: float = 20.0
 _WEIGHT_ACCOUNT_FIT: float = 10.0
-
-# Cash-Secured-Put scoring weights — five article dimensions plus account_fit.
-# Total is 100 before any concentration penalty (subtractive, shared with
-# spreads). Income < Distance reflects "survival first, gains second".
-_WEIGHT_CSP_INCOME: float = 20.0
-_WEIGHT_CSP_DISTANCE: float = 25.0
-_WEIGHT_CSP_POP: float = 20.0
-_WEIGHT_CSP_VOL_ENV: float = 15.0
-_WEIGHT_CSP_TIME_EFFICIENCY: float = 10.0
-# 90 from CSP-specific dimensions; remaining 10 reuses _WEIGHT_ACCOUNT_FIT.
-
 
 def _score_regime_fit(candidate: Candidate) -> float:
     """Map IVR (0-100) linearly to [0, 15]; neutral 7.5 when iv_rank is None."""
@@ -1151,18 +1061,10 @@ def _score_account_fit(
     candidate: Candidate,
     account_state: Optional[AccountState] = None,
 ) -> float:
-    """Score 0..10 for trade-size fit; placeholder 10.0 when account_state is None or NLV non-positive.
-
-    CSPs use a wider linear ramp (10..0 over [10%, 25%] of NLV) because
-    their assignment-to-zero max-loss is fundamentally larger than spread
-    max-loss. Spreads keep the original 10..0 over [2%, 5%] ramp.
-    """
+    """Score 0..10 for trade-size fit; placeholder 10.0 when account_state is None or NLV non-positive."""
     if account_state is None or account_state.nlv <= 0:
         return _WEIGHT_ACCOUNT_FIT
     pct = _dollar_max_loss(candidate) / account_state.nlv
-    if candidate.structure == "CASH_SECURED_PUT":
-        # 10 at <=10% NLV; 0 at >=25% NLV; linear in between.
-        return max(0.0, min(10.0, 10.0 * (0.25 - pct) / 0.15))
     return max(0.0, min(10.0, 10.0 * (0.05 - pct) / 0.03))
 
 
@@ -1176,97 +1078,6 @@ def _score_concentration_penalty(
     existing = account_state.existing_exposures.get(candidate.symbol, 0.0)
     post_trade_pct = (existing + _dollar_max_loss(candidate)) / account_state.nlv
     return max(0.0, min(10.0, 10.0 * (post_trade_pct - 0.05) / 0.20))
-
-
-def _csp_short_strike(candidate: Candidate) -> float:
-    """Pull the short-put strike off the candidate's single SELL leg."""
-    for leg in candidate.legs or []:
-        if leg.get("action") == "SELL":
-            strike = leg.get("strike")
-            if strike is not None:
-                return float(strike)
-    return 0.0
-
-
-def _csp_annualized_return(candidate: Candidate) -> float:
-    """(credit * 365 / dte) / strike. Yield on cash-secured capital."""
-    strike = _csp_short_strike(candidate)
-    if strike <= 0 or candidate.dte <= 0:
-        return 0.0
-    return (candidate.credit * 365.0 / candidate.dte) / strike
-
-
-def _score_csp_income(candidate: Candidate, min_annualized_return: float) -> float:
-    """0..20 by annualized return, ramping from min_annualized_return up to 0.30 (30%).
-
-    Saturates at the cap when the user-tuned floor exceeds the cap (avoid
-    div-by-zero / negative-range artefacts).
-    """
-    ann = _csp_annualized_return(candidate)
-    if ann <= min_annualized_return:
-        return 0.0
-    span = 0.30 - min_annualized_return
-    if span <= 0:
-        return _WEIGHT_CSP_INCOME
-    factor = min(1.0, (ann - min_annualized_return) / span)
-    return _WEIGHT_CSP_INCOME * factor
-
-
-def _score_csp_distance(candidate: Candidate, min_otm_pct: float) -> float:
-    """0..25 by buffer below spot, ramping from min_otm_pct up to 0.15 (15% OTM)."""
-    spot = candidate.context.current_price
-    if spot is None or float(spot) <= 0:
-        return 0.0
-    strike = _csp_short_strike(candidate)
-    if strike <= 0:
-        return 0.0  # malformed candidate — no SELL leg
-    pct_otm = (float(spot) - strike) / float(spot)
-    if pct_otm < min_otm_pct:
-        return 0.0
-    span = 0.15 - min_otm_pct
-    if span <= 0:
-        return _WEIGHT_CSP_DISTANCE
-    factor = min(1.0, (pct_otm - min_otm_pct) / span)
-    return _WEIGHT_CSP_DISTANCE * factor
-
-
-def _score_csp_pop(candidate: Candidate) -> float:
-    """0..20 by 1 - |delta|, ramping over [0.65, 0.85]."""
-    pop = 1.0 - abs(candidate.short_delta or 0.0)
-    factor = max(0.0, min(1.0, (pop - 0.65) / 0.20))
-    return _WEIGHT_CSP_POP * factor
-
-
-def _score_csp_vol_env(candidate: Candidate) -> float:
-    """0..15 by IVR ramping over [30, 70]; placeholder 7.5 when IVR is None."""
-    ivr = candidate.context.iv_rank
-    if ivr is None:
-        return _WEIGHT_CSP_VOL_ENV * 0.5
-    factor = max(0.0, min(1.0, (ivr - 30.0) / 40.0))
-    return _WEIGHT_CSP_VOL_ENV * factor
-
-
-def _score_csp_time_efficiency(candidate: Candidate) -> float:
-    """0..10 by DTE bucket fit. Peaks 30..45 DTE.
-
-    Sub-21 DTE is penalised harder than >60 DTE — the article calls out gamma
-    risk on short-DTE puts as more dangerous than the slow time decay of
-    longer-dated. Floor 0.10 below 21d, 0.40 above 60d.
-    """
-    dte = candidate.dte
-    if dte <= 0:
-        return 0.0
-    if 30 <= dte <= 45:
-        factor = 1.0
-    elif 21 <= dte < 30:
-        factor = (dte - 21) / 9.0  # ramp 0..1
-    elif 45 < dte <= 60:
-        factor = 1.0 - (dte - 45) / 15.0  # ramp 1..0
-    elif dte < 21:
-        factor = 0.10  # gamma risk
-    else:  # dte > 60
-        factor = 0.40  # slow theta but not blow-up territory
-    return _WEIGHT_CSP_TIME_EFFICIENCY * factor
 
 
 def _format_summary_reason(
@@ -1325,115 +1136,15 @@ def _format_summary_reason(
     return ", ".join(phrases[:4])
 
 
-def _score_csp_candidate(
-    candidate: Candidate,
-    *,
-    today: date,
-    account_state: Optional[AccountState] = None,
-    min_otm_pct: float = 0.03,
-    min_annualized_return: float = 0.10,
-) -> Candidate:
-    """CSP scoring path — five article dimensions plus account_fit + penalty.
-
-    Total score is bounded to [0, 100]. Concentration penalty is shared with
-    spreads (subtractive). Earnings risk is folded into the time_efficiency
-    + distance components rather than its own bucket — CSPs near earnings
-    typically blow through buffer regardless of DTE bucket.
-    """
-    income = _score_csp_income(candidate, min_annualized_return)
-    distance = _score_csp_distance(candidate, min_otm_pct)
-    pop = _score_csp_pop(candidate)
-    vol_env = _score_csp_vol_env(candidate)
-    time_eff = _score_csp_time_efficiency(candidate)
-    account = _score_account_fit(candidate, account_state)
-    penalty = _score_concentration_penalty(candidate, account_state)
-    # Earnings within 7d → drop time_efficiency to floor (matches spread gate intent).
-    if candidate.context.next_earnings_date is not None:
-        days_to_earnings = (candidate.context.next_earnings_date - today).days
-        if 0 <= days_to_earnings <= 7:
-            time_eff = 0.0
-
-    breakdown: dict[str, float] = {
-        "csp_income": income,
-        "csp_distance": distance,
-        "csp_pop": pop,
-        "csp_vol_env": vol_env,
-        "csp_time_efficiency": time_eff,
-        "account_fit": account,
-        "concentration_penalty": penalty,
-    }
-
-    total = income + distance + pop + vol_env + time_eff + account - penalty
-    score = max(0.0, min(100.0, total))
-
-    summary = _format_csp_summary_reason(candidate, breakdown)
-
-    return replace(
-        candidate,
-        score=score,
-        score_breakdown=breakdown,
-        summary_reason=summary,
-    )
-
-
-def _format_csp_summary_reason(candidate: Candidate, breakdown: dict[str, float]) -> str:
-    """One-line plain-English string of the strongest CSP factors."""
-    phrases: list[str] = []
-    ivr = candidate.context.iv_rank
-    if breakdown["csp_vol_env"] / _WEIGHT_CSP_VOL_ENV >= 0.6 and ivr is not None:
-        phrases.append(f"IVR {round(ivr)}")
-
-    spot = candidate.context.current_price
-    if spot is not None and float(spot) > 0:
-        pct_otm = (float(spot) - _csp_short_strike(candidate)) / float(spot)
-        if pct_otm >= 0.05:
-            phrases.append(f"{pct_otm * 100:.1f}% OTM buffer")
-
-    pop = 1.0 - abs(candidate.short_delta or 0.0)
-    if pop >= 0.75:
-        phrases.append(f"POP {pop * 100:.0f}%")
-
-    ann = _csp_annualized_return(candidate)
-    if ann >= 0.12:
-        phrases.append(f"{ann * 100:.1f}% annualized")
-
-    if 30 <= candidate.dte <= 45:
-        phrases.append("prime DTE")
-
-    skew = candidate.context.put_call_skew
-    if skew is not None and skew >= 1.20:
-        phrases.append(f"⚠ skew {skew:.2f}")
-
-    if not phrases:
-        return "weak across CSP factors"
-    return ", ".join(phrases[:5])
-
-
 def score_candidate(
     candidate: Candidate,
     *,
     today: Optional[date] = None,
     account_state: Optional[AccountState] = None,
-    csp_min_otm_pct: Optional[float] = None,
-    csp_min_annualized_return: Optional[float] = None,
 ) -> Candidate:
-    """Return a new Candidate with score, score_breakdown, and summary_reason populated.
-
-    Dispatches to the CSP-specific scoring path when the candidate's structure
-    is ``CASH_SECURED_PUT``; spreads/iron-condors keep the original 7-component
-    formula.
-    """
+    """Return a new Candidate with score, score_breakdown, and summary_reason populated."""
     if today is None:
         today = date.today()
-
-    if candidate.structure == "CASH_SECURED_PUT":
-        return _score_csp_candidate(
-            candidate,
-            today=today,
-            account_state=account_state,
-            min_otm_pct=csp_min_otm_pct if csp_min_otm_pct is not None else 0.03,
-            min_annualized_return=csp_min_annualized_return if csp_min_annualized_return is not None else 0.10,
-        )
 
     regime = _score_regime_fit(candidate)
     liquidity = _score_liquidity(candidate)
@@ -1471,19 +1182,11 @@ def score_candidates(
     *,
     today: Optional[date] = None,
     account_state: Optional[AccountState] = None,
-    csp_min_otm_pct: Optional[float] = None,
-    csp_min_annualized_return: Optional[float] = None,
 ) -> list[Candidate]:
     """Score each candidate; preserve input order; pure (returns new list of new Candidates)."""
     if today is None:
         today = date.today()
     return [
-        score_candidate(
-            c,
-            today=today,
-            account_state=account_state,
-            csp_min_otm_pct=csp_min_otm_pct,
-            csp_min_annualized_return=csp_min_annualized_return,
-        )
+        score_candidate(c, today=today, account_state=account_state)
         for c in candidates
     ]

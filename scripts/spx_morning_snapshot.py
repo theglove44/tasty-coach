@@ -34,9 +34,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.gex import GEXAgent  # noqa: E402
 from agents.scanner import ScannerAgent, SnapshotData  # noqa: E402
 from utils.market_schedule import MarketSchedule  # noqa: E402
+from utils.private_paths import ARTIFACTS_DIR  # noqa: E402
 from utils.tasty_client import TastyClient  # noqa: E402
 
-DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "spx_morning_snapshot.json"
+DEFAULT_OUTPUT = ARTIFACTS_DIR / "spx_morning_snapshot.json"
 DEFAULT_SYMBOLS = ["SPX", "SPY", "XSP", "VIX", "/ES", "/NQ"]
 DEFAULT_WATCHLIST = "Snapshot"
 DEFAULT_GEX_UNDERLYING = "SPY"

@@ -1426,10 +1426,6 @@ class TestLoadThresholds(unittest.TestCase):
                 "research_timeout_seconds",
                 "per_trade_risk_pct",
                 "per_trade_risk_dollars",
-                "csp_min_otm_pct",
-                "csp_min_annualized_return",
-                "csp_skew_warn_threshold",
-                "csp_max_pct_nlv_per_trade",
             },
         )
         expected_calls = [
@@ -1447,10 +1443,6 @@ class TestLoadThresholds(unittest.TestCase):
             "bt_research_timeout_seconds",
             "bt_per_trade_risk_pct",
             "bt_per_trade_risk_dollars",
-            "bt_csp_min_otm_pct",
-            "bt_csp_min_annualized_return",
-            "bt_csp_skew_warn_threshold",
-            "bt_csp_max_pct_nlv_per_trade",
         ]
         actual_calls = [call.args[0] for call in mock_settings.get.call_args_list]
         self.assertEqual(set(actual_calls), set(expected_calls))

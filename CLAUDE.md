@@ -19,6 +19,11 @@ that is stale/incorrect), `python-dotenv`, `pandas`, `rich`,
 `claude-agent-sdk`, `fastapi` + `uvicorn` + `jinja2` + `sse-starlette` for the
 dashboard.
 
+Private runtime output is rooted at
+`/Users/office/Private/ProjectsData/trading/tasty-coach` through
+`TASTY_COACH_PRIVATE_DATA_ROOT`. The canonical Tastytrade API reference is
+`../../shared/tastytrade-docs`.
+
 ## Relationship to AGENTS.md
 
 - **AGENTS.md** is the terse, mechanical reference: build/test commands,

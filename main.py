@@ -80,8 +80,7 @@ def setup_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-delta", type=float, default=None, help="Minimum absolute short delta (default: 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Maximum absolute short delta (default: 0.45)")
     parser.add_argument("--best-trades", action="store_true", help="Rank best trade ideas across watchlists")
-    parser.add_argument("--put-selector", action="store_true", help="Cash-secured-put screener: scan watchlists for income-focused short puts ranked on income/buffer/POP/IV/time")
-    parser.add_argument("--journal", action="store_true", help="When used with --best-trades or --put-selector: persist each top pick as a journal recommendation entry")
+    parser.add_argument("--journal", action="store_true", help="When used with --best-trades: persist each top pick as a journal recommendation entry")
     parser.add_argument("--coach", action="store_true", help="AI coach: one-shot personalized daily briefing (uses Claude Max via CLAUDE_CODE_OAUTH_TOKEN)")
     parser.add_argument("--chat", action="store_true", help="AI coach: interactive chat REPL")
     parser.add_argument("--serve", action="store_true", help="Run the web dashboard (FastAPI + chat sidebar)")
@@ -288,17 +287,15 @@ async def async_main() -> int:
                 await run_chat(ctx)
             return 0
 
-        if args.best_trades or args.put_selector:
+        if args.best_trades:
             from agents.trade_ranker import run_best_trades, _print_best_trades_text
 
-            structure_filter = "CASH_SECURED_PUT" if args.put_selector else None
             result = await run_best_trades(
                 session,
                 watchlists=args.bt_watchlist,
                 top=args.top,
                 output_format=args.format,
                 account_number=args.account or getattr(client.config, "account_number", None),
-                structure_filter=structure_filter,
             )
 
             if args.journal:

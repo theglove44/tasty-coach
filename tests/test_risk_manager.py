@@ -16,6 +16,9 @@ class TestRiskManager(unittest.IsolatedAsyncioTestCase):
         mock_balances = MagicMock()
         mock_balances.net_liquidating_value = Decimal(100000)
         mock_balances.equity_buying_power = Decimal(60000) # 40% used (40k used)
+        mock_balances.day_trade_excess = Decimal(25000)
+        mock_balances.day_trading_buying_power = Decimal(50000)
+        mock_balances.cash_balance = Decimal(40000)
         mock_account.get_balances.return_value = mock_balances
         
         # Mock Positions
@@ -47,9 +50,13 @@ class TestRiskManager(unittest.IsolatedAsyncioTestCase):
             mock_greeks.delta = Decimal("0.5")
             mock_greeks.theta = Decimal("-0.1") # -0.1 * 100 = -10 theta
             
-            with patch.object(risk, '_fetch_greeks', new_callable=AsyncMock) as mock_fetch:
+            with patch.object(risk, '_fetch_greeks', new_callable=AsyncMock) as mock_fetch, \
+                 patch.object(risk, '_fetch_marks', new_callable=AsyncMock) as mock_marks, \
+                 patch.object(risk, '_resolve_streamer_symbols', new_callable=AsyncMock) as mock_stream:
                 mock_fetch.return_value = {"SPY 250117C500": mock_greeks}
-                
+                mock_marks.return_value = {"AAPL": 150.0, "SPY 250117C500": 2.0}
+                mock_stream.return_value = {"SPY 250117C500": "SPY 250117C500"}
+
                 report = await risk.calculate_portfolio_risk()
                 
                 # Verify NLV
