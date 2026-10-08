@@ -57,6 +57,7 @@ Thumbs.db
 # Data files (may contain sensitive account info)
 *.csv
 *.json
+!.central-brain.json
 data/
 cache/
 
